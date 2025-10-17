@@ -72,7 +72,6 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
   const [pendingContext, setPendingContext] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
-  const sendToAISessionRef = useRef(sendToAISession)
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -83,7 +82,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
   useEffect(() => {
     if (aiSessionActive && pendingContext && !contextSent) {
       const sendPendingContext = async () => {
-        const sent = await sendToAISessionRef.current(pendingContext)
+        const sent = await sendToAISession(pendingContext, { silent: true, force: true })
         if (sent) {
           const contextMsg: Message = {
             id: generateMessageId(),
@@ -1092,7 +1091,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
                     }
                   `}
                 >
-                  <pre className="text-sm font-mono whitespace-pre-wrap break-words">
+                  <pre className="text-sm font-mono whitespace-pre-wrap">
                     {message.content}
                   </pre>
                   <p
