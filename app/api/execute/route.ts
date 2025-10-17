@@ -14,6 +14,37 @@ export async function POST(request: NextRequest) {
     start(controller) {
       let proc: any
       let isClosed = false
+      let listenersCleaned = false
+      let handleStdout: ((data: Buffer) => void) | null = null
+      let handleStderr: ((data: Buffer) => void) | null = null
+      let handleClose: ((code: number) => void) | null = null
+      let handleError: ((error: Error) => void) | null = null
+
+      const cleanupListeners = () => {
+        if (listenersCleaned) {
+          return
+        }
+        listenersCleaned = true
+
+        if (proc?.stdout) {
+          if (handleStdout) {
+            proc.stdout.removeListener('data', handleStdout)
+          }
+        }
+        if (proc?.stderr) {
+          if (handleStderr) {
+            proc.stderr.removeListener('data', handleStderr)
+          }
+        }
+        if (proc) {
+          if (handleClose) {
+            proc.removeListener('close', handleClose)
+          }
+          if (handleError) {
+            proc.removeListener('error', handleError)
+          }
+        }
+      }
 
       const emit = (payload: Record<string, unknown>) => {
         if (isClosed) {
@@ -24,17 +55,25 @@ export async function POST(request: NextRequest) {
           controller.enqueue(encoder.encode(JSON.stringify(payload) + '\n'))
         } catch (error) {
           isClosed = true
-          console.error('Failed to emit stream payload', error)
+          cleanupListeners()
+
+          if (error instanceof TypeError && String(error.message).includes('Invalid state')) {
+            console.debug('Stream already closed; skipping payload emission')
+          } else {
+            console.error('Failed to emit stream payload', error)
+          }
         }
       }
 
       const finalize = (payload?: Record<string, unknown>) => {
-        if (!isClosed && payload) {
-          emit(payload)
-        }
-
         if (!isClosed) {
+          if (payload) {
+            emit(payload)
+          }
+
           isClosed = true
+          cleanupListeners()
+
           try {
             controller.close()
           } catch (error) {
@@ -73,37 +112,41 @@ export async function POST(request: NextRequest) {
       })
 
       // Handle stdout
-      proc.stdout?.on('data', (data: Buffer) => {
+      handleStdout = (data: Buffer) => {
         emit({
           type: 'stdout',
           data: data.toString(),
         })
-      })
+      }
+      proc.stdout?.on('data', handleStdout)
 
       // Handle stderr
-      proc.stderr?.on('data', (data: Buffer) => {
+      handleStderr = (data: Buffer) => {
         emit({
           type: 'stderr',
           data: data.toString(),
         })
-      })
+      }
+      proc.stderr?.on('data', handleStderr)
 
       // Handle process completion
-      proc.on('close', (code) => {
+      handleClose = (code: number) => {
         finalize({
           type: 'close',
           data: `Process exited with code ${code}\n`,
           code,
         })
-      })
+      }
+      proc.on('close', handleClose)
 
       // Handle errors
-      proc.on('error', (error) => {
+      handleError = (error: Error) => {
         finalize({
           type: 'error',
           data: `Error: ${error.message}\n`,
         })
-      })
+      }
+      proc.on('error', handleError)
     },
   })
 

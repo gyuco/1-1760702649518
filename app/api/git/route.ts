@@ -22,7 +22,8 @@ async function runGitCommand(command: string, cwd: string): Promise<string> {
 
 export async function POST(request: NextRequest) {
   try {
-    const { action, basePath, taskId } = await request.json()
+    const body = await request.json()
+    const { action, basePath, taskId } = body
 
     switch (action) {
       case 'getBranch': {
@@ -55,7 +56,7 @@ export async function POST(request: NextRequest) {
       }
 
       case 'getWorktreeStatus': {
-        const { worktreePath } = await request.json()
+        const { worktreePath } = body
 
         // Check if there are changes
         const status = await runGitCommand('git status --porcelain', worktreePath)
@@ -85,7 +86,7 @@ export async function POST(request: NextRequest) {
       }
 
       case 'mergeWorktree': {
-        const { worktreePath, worktreeBranch } = await request.json()
+        const { worktreePath, worktreeBranch, baseBranch } = body
 
         // First, commit any pending changes in worktree
         try {
@@ -101,8 +102,10 @@ export async function POST(request: NextRequest) {
           console.warn('No changes to commit or commit failed:', error)
         }
 
-        // Switch back to base branch
-        await runGitCommand('git checkout -', basePath)
+        // Ensure we're on the correct base branch before merging
+        if (baseBranch) {
+          await runGitCommand(`git checkout ${baseBranch}`, basePath)
+        }
 
         // Merge the worktree branch
         try {
@@ -126,7 +129,7 @@ export async function POST(request: NextRequest) {
       }
 
       case 'cleanupWorktree': {
-        const { worktreePath, worktreeBranch } = await request.json()
+        const { worktreePath, worktreeBranch } = body
 
         // Remove worktree and branch
         try {

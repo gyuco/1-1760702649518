@@ -519,6 +519,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
           basePath: worktreeInfo.basePath, // Use the stored original path
           worktreePath: worktreeInfo.path,
           worktreeBranch: worktreeInfo.branch,
+          baseBranch: worktreeInfo.baseBranch,
         }),
       })
 
