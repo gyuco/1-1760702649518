@@ -112,7 +112,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     }
   }
 
-  const startAISession = async (targetCwd?: string): Promise<boolean> => {
+  const startAISession = async (targetCwd?: string): Promise<string | null> => {
     const sessionId = `${card.id}-${Date.now()}`
     setAiSessionId(sessionId)
 
@@ -154,6 +154,29 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
             for (const line of lines) {
               try {
                 const data = JSON.parse(line)
+
+                if (data.type === 'stdout') {
+                  try {
+                    const structured = JSON.parse(data.data)
+                    if (structured?.event === 'prompt_result') {
+                      const stopReason = structured?.payload?.stopReason || 'unknown'
+                      const completionMsg: Message = {
+                        id: generateMessageId(),
+                        type: 'system',
+                        content: `✅ AI task completed (stop reason: ${stopReason}). Review changes and merge when ready.`,
+                        timestamp: new Date(),
+                      }
+                      setMessages((prev) => [...prev, completionMsg])
+                      setTaskStarted(false)
+                      setAiSessionActive(false)
+                      setPendingContext(null)
+                      setShowMergeDialog(true)
+                      continue
+                    }
+                  } catch {
+                    // Ignore JSON parse errors and treat as regular output
+                  }
+                }
 
                 // Filter out unwanted system messages
                 const shouldSkip =
@@ -205,7 +228,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
       }
 
       readLoop()
-      return true
+      return sessionId
     } catch (error: any) {
       const errorMessage: Message = {
         id: generateMessageId(),
@@ -216,15 +239,18 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
       setMessages((prev) => [...prev, errorMessage])
       setAiSessionActive(false)
       setTaskStarted(false)
-      return false
+      return null
     }
   }
 
   const sendToAISession = async (
     message: string,
-    options: { silent?: boolean } = {}
+    options: { silent?: boolean; sessionIdOverride?: string; force?: boolean } = {}
   ): Promise<boolean> => {
-    if (!aiSessionId || !aiSessionActive) {
+    const targetSessionId = options.sessionIdOverride ?? aiSessionId
+    const isActive = options.force ? true : aiSessionActive
+
+    if (!targetSessionId || !isActive) {
       if (!options.silent) {
         const errorMessage: Message = {
           id: generateMessageId(),
@@ -244,7 +270,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'send',
-          sessionId: aiSessionId,
+          sessionId: targetSessionId,
           args: [message],
         }),
       })
@@ -512,14 +538,18 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         const contextMessage = buildContextMessage(currentWorktree)
         setPendingContext(contextMessage)
 
-        const sessionStarted = await startAISession(currentWorktree.path)
-        if (!sessionStarted) {
+        const startedSessionId = await startAISession(currentWorktree.path)
+        if (!startedSessionId) {
           return
         }
 
         await new Promise((resolve) => setTimeout(resolve, 500))
 
-        const sent = await sendToAISession(contextMessage, { silent: true })
+        const sent = await sendToAISession(contextMessage, {
+          silent: true,
+          sessionIdOverride: startedSessionId,
+          force: true,
+        })
 
         if (sent) {
           const contextMsg: Message = {

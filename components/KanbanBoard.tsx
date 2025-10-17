@@ -44,7 +44,7 @@ const initialCards: Card[] = [
   {
     id: '1',
     title: 'Change board title',
-    description: 'Change the title Project Kanban Board to Giuseppe Concas Kanban Board',
+    description: 'Change the title Giuseppe Concas Kanban Board to demo board 01',
     priority: 'high',
     columnId: 'todo',
   },
