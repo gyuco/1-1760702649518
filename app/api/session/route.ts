@@ -9,6 +9,7 @@ import {
   buildCliInvocation,
   getCliStrategy,
   isAiCli,
+  supportsAcp,
 } from '@/lib/cli/strategies'
 import { prepareCliEnvironment } from '@/lib/cli/environment'
 import {
@@ -133,6 +134,16 @@ export async function POST(request: NextRequest) {
           JSON.stringify({
             success: false,
             error: `Sessions are only supported for AI CLIs (received "${mode}")`,
+          }),
+          { status: 400 }
+        )
+      }
+
+      if (!supportsAcp(mode)) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: `This CLI does not support ACP sessions. Use /api/execute instead (received "${mode}")`,
           }),
           { status: 400 }
         )
@@ -349,7 +360,17 @@ export async function POST(request: NextRequest) {
         )
       }
 
-      if (!isAiCli(session.mode) || !session.acp || !session.agentSessionId) {
+      if (!supportsAcp(session.mode)) {
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: 'This CLI does not support ACP sessions',
+          }),
+          { status: 400 }
+        )
+      }
+
+      if (!session.acp || !session.agentSessionId) {
         return new Response(
           JSON.stringify({
             success: false,

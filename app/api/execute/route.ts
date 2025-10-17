@@ -1,5 +1,7 @@
 import { NextRequest } from 'next/server'
 import { spawn } from 'child_process'
+import { supportsAcp, usesStdinStdout, buildCliInvocation, getCliStrategy, CLIType } from '@/lib/cli/strategies'
+import { prepareCliEnvironment } from '@/lib/cli/environment'
 
 export const runtime = 'nodejs'
 
@@ -10,11 +12,12 @@ export async function POST(request: NextRequest) {
   // Use provided working directory or default to process.cwd()
   const workingDir = cwd || process.cwd()
 
-  if (mode === 'gemini' || mode === 'qwen' || mode === 'amp' || mode === 'claude' || mode === 'codex') {
+  // Only reject ACP-based CLIs, allow Claude which uses stdin/stdout
+  if (supportsAcp(mode)) {
     return new Response(
       JSON.stringify({
         success: false,
-        error: 'Use /api/session for AI assistant interactions.',
+        error: 'Use /api/session for ACP-based AI assistants (Qwen, Gemini, AMP, Codex).',
       }),
       {
         status: 400,
@@ -24,7 +27,7 @@ export async function POST(request: NextRequest) {
   }
 
   const stream = new ReadableStream({
-    start(controller) {
+    async start(controller) {
       let proc: any
       let isClosed = false
       let listenersCleaned = false
@@ -96,17 +99,55 @@ export async function POST(request: NextRequest) {
       }
 
       // Handle different modes
-      // For shell commands, use the original behavior
-      proc = spawn(command, args, {
-        shell: true,
-        cwd: workingDir,
-      })
+      if (usesStdinStdout(mode)) {
+        // Claude uses stdin/stdout with the CLI builder
+        try {
+          await prepareCliEnvironment(mode as CLIType, workingDir)
+          const strategy = getCliStrategy(mode as CLIType)
+          const invocation = buildCliInvocation(strategy, { cwd: workingDir })
 
-      // Send initial message
-      emit({
-        type: 'start',
-        data: `Executing: ${command} ${args.join(' ')}\n`,
-      })
+          // For Claude, the command is the full prompt passed in args[0]
+          const prompt = args.join(' ')
+
+          proc = spawn(invocation.command, invocation.args, {
+            cwd: workingDir,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            env: {
+              ...process.env,
+              ...invocation.env,
+            },
+          })
+
+          // Write prompt to stdin and close it
+          if (proc.stdin) {
+            proc.stdin.write(prompt)
+            proc.stdin.end()
+          }
+
+          emit({
+            type: 'start',
+            data: `Starting ${mode} with prompt...\n`,
+          })
+        } catch (error: any) {
+          finalize({
+            type: 'error',
+            data: `Failed to start ${mode}: ${error.message}\n`,
+          })
+          return
+        }
+      } else {
+        // For shell commands, use the original behavior
+        proc = spawn(command, args, {
+          shell: true,
+          cwd: workingDir,
+        })
+
+        // Send initial message
+        emit({
+          type: 'start',
+          data: `Executing: ${command} ${args.join(' ')}\n`,
+        })
+      }
 
       // Handle stdout
       handleStdout = (data: Buffer) => {

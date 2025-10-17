@@ -7,6 +7,8 @@ import {
   CLI_OPTIONS,
   CLIType,
   isAiCli,
+  supportsAcp,
+  usesStdinStdout,
 } from '@/lib/cli/strategies'
 
 interface DetailPanelProps {
@@ -86,14 +88,12 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // Send pending context when session becomes active
+  // Send pending context when session becomes active (only for ACP-based CLIs)
   useEffect(() => {
-    if (aiSessionActive && pendingContext && !contextSent && sendToAISessionRef.current) {
-      console.log('[DetailPanel] Attempting to send pending context...')
+    if (aiSessionActive && pendingContext && !contextSent && sendToAISessionRef.current && supportsAcp(selectedCLI)) {
       const sendPendingContext = async () => {
         const sent = await sendToAISessionRef.current!(pendingContext, { silent: true, force: true })
         if (sent) {
-          console.log('[DetailPanel] Context sent successfully')
           const contextMsg: Message = {
             id: generateMessageId(),
             type: 'system',
@@ -104,19 +104,16 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
           setContextSent(true)
           setPendingContext(null)
           setPendingContextRetries(0) // Reset retries on success
-        } else {
-          console.log('[DetailPanel] Failed to send context, retries:', pendingContextRetries)
-          if (pendingContextRetries < 5) { // Retry up to 5 times
-            // If sending failed and we haven't exceeded retries, try again after a delay
-            setTimeout(() => {
-              setPendingContextRetries(prev => prev + 1)
-            }, 1000 * (pendingContextRetries + 1)) // Increasing delay: 1s, 2s, 3s, etc.
-          }
+        } else if (pendingContextRetries < 5) { // Retry up to 5 times
+          // If sending failed and we haven't exceeded retries, try again after a delay
+          setTimeout(() => {
+            setPendingContextRetries(prev => prev + 1)
+          }, 1000 * (pendingContextRetries + 1)) // Increasing delay: 1s, 2s, 3s, etc.
         }
       }
       sendPendingContext()
     }
-  }, [aiSessionActive, pendingContext, contextSent, pendingContextRetries])
+  }, [aiSessionActive, pendingContext, contextSent, pendingContextRetries, selectedCLI])
 
   // Reset context when CLI changes
   useEffect(() => {
@@ -193,9 +190,8 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
               try {
                 const data = JSON.parse(line)
 
-                // Check if session is ready by looking for "Session ready" message
-                if (data.type === 'stdout' && typeof data.data === 'string' && data.data.includes('Session ready')) {
-                  console.log('[DetailPanel] Session is ready, activating AI session')
+                // Check if session is ready by looking for "Session ready" message (ACP-based CLIs only)
+                if (supportsAcp(selectedCLI) && data.type === 'stdout' && typeof data.data === 'string' && data.data.includes('Session ready')) {
                   setAiSessionActive(true)
                   // Display the session ready message
                   const readyMsg: Message = {
@@ -303,10 +299,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     const targetSessionId = options.sessionIdOverride ?? aiSessionId
     const isActive = options.force ? true : aiSessionActive
 
-    console.log('[sendToAISession] Attempting to send message. SessionId:', targetSessionId, 'isActive:', isActive, 'force:', options.force)
-
     if (!targetSessionId || !isActive) {
-      console.log('[sendToAISession] Cannot send - session not ready')
       if (!options.silent) {
         const errorMessage: Message = {
           id: generateMessageId(),
@@ -321,7 +314,6 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     }
 
     try {
-      console.log('[sendToAISession] Sending request to /api/session')
       const response = await fetch('/api/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -336,13 +328,10 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         const payload = await response.json().catch(() => null)
         const errorText =
           (payload && payload.error) || `Request failed with status ${response.status}`
-        console.error('[sendToAISession] Request failed:', errorText)
         throw new Error(errorText)
       }
-      console.log('[sendToAISession] Message sent successfully')
       return true
     } catch (error: any) {
-      console.error('[sendToAISession] Error:', error)
       if (!options.silent) {
         const errorMessage: Message = {
           id: generateMessageId(),
@@ -426,43 +415,59 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     setInputValue('')
     setIsExecuting(true)
 
-    // For AI CLIs ensure we have an active session
+    // For AI CLIs check if we should use session-based or direct approach
     if (isAiCli(selectedCLI)) {
-      if (aiSessionActive && aiSessionId) {
-        await sendToAISession(command)
-      } else {
-        const errorMessage: Message = {
-          id: generateMessageId(),
-          type: 'error',
-          content:
-            'AI session is not running. Review the latest logs and press "Start Task" to reconnect.',
-          timestamp: new Date(),
+      if (supportsAcp(selectedCLI)) {
+        // ACP-based CLIs use session approach
+        if (aiSessionActive && aiSessionId) {
+          await sendToAISession(command)
+        } else {
+          const errorMessage: Message = {
+            id: generateMessageId(),
+            type: 'error',
+            content:
+              'AI session is not running. Review the latest logs and press "Start Task" to reconnect.',
+            timestamp: new Date(),
+          }
+          setMessages((prev) => [...prev, errorMessage])
         }
-        setMessages((prev) => [...prev, errorMessage])
+        setIsExecuting(false)
+        return
       }
-      setIsExecuting(false)
-      return
+      // For stdin/stdout CLIs like Claude, fall through to use /api/execute
     }
 
     // Prepare command based on CLI type
-    // Direct shell command path
-    const parts = command.trim().split(' ')
-    const cmd = parts[0]
-    const args = parts.slice(1)
-
     try {
       abortControllerRef.current = new AbortController()
+
+      let requestBody: any
+
+      if (usesStdinStdout(selectedCLI)) {
+        // For Claude, pass the full command as args (will be used as prompt)
+        requestBody = {
+          command: '', // Not used for Claude
+          args: [command], // Full prompt
+          mode: selectedCLI,
+          cwd: worktreeInfo ? worktreeInfo.path : workingDirectory
+        }
+      } else {
+        // For shell commands, parse command and args
+        const parts = command.trim().split(' ')
+        const cmd = parts[0]
+        const args = parts.slice(1)
+        requestBody = {
+          command: cmd,
+          args,
+          mode: selectedCLI,
+          cwd: worktreeInfo ? worktreeInfo.path : workingDirectory
+        }
+      }
 
       const response = await fetch('/api/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          command: cmd,
-          args,
-          mode: selectedCLI,
-          // Use worktree path if active, otherwise use working directory
-          cwd: worktreeInfo ? worktreeInfo.path : workingDirectory
-        }),
+        body: JSON.stringify(requestBody),
         signal: abortControllerRef.current.signal,
       })
 
@@ -487,6 +492,76 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         for (const line of lines) {
           try {
             const data = JSON.parse(line)
+
+            // For Claude, parse the nested JSON structure
+            if (usesStdinStdout(selectedCLI) && data.type === 'stdout' && data.data) {
+              try {
+                const claudeMessage = JSON.parse(data.data)
+
+                // Handle different Claude message types
+                if (claudeMessage.type === 'assistant' && claudeMessage.message?.content) {
+                  for (const contentItem of claudeMessage.message.content) {
+                    if (contentItem.type === 'text' && contentItem.text) {
+                      const message: Message = {
+                        id: generateMessageId(),
+                        type: 'stdout',
+                        content: contentItem.text,
+                        timestamp: new Date(),
+                      }
+                      setMessages((prev) => [...prev, message])
+                    } else if (contentItem.type === 'thinking' && contentItem.thinking) {
+                      const message: Message = {
+                        id: generateMessageId(),
+                        type: 'system',
+                        content: `💭 Thinking: ${contentItem.thinking}`,
+                        timestamp: new Date(),
+                      }
+                      setMessages((prev) => [...prev, message])
+                    } else if (contentItem.type === 'tool_use') {
+                      const toolName = contentItem.name || 'unknown'
+                      const message: Message = {
+                        id: generateMessageId(),
+                        type: 'system',
+                        content: `🔧 Using tool: ${toolName}`,
+                        timestamp: new Date(),
+                      }
+                      setMessages((prev) => [...prev, message])
+                    }
+                  }
+                } else if (claudeMessage.type === 'user' && claudeMessage.message?.content) {
+                  // Skip user messages or show tool results
+                  for (const contentItem of claudeMessage.message.content) {
+                    if (contentItem.type === 'tool_result' && contentItem.content) {
+                      // Tool results are typically shown inline, skip or format minimally
+                      continue
+                    }
+                  }
+                } else if (claudeMessage.type === 'system') {
+                  const subtype = claudeMessage.subtype || 'info'
+                  if (subtype !== 'init') {
+                    const message: Message = {
+                      id: generateMessageId(),
+                      type: 'system',
+                      content: `System: ${subtype}`,
+                      timestamp: new Date(),
+                    }
+                    setMessages((prev) => [...prev, message])
+                  }
+                } else if (claudeMessage.type === 'result') {
+                  const stopReason = claudeMessage.result?.stop_reason || 'unknown'
+                  const message: Message = {
+                    id: generateMessageId(),
+                    type: 'system',
+                    content: `✅ Task completed (${stopReason})`,
+                    timestamp: new Date(),
+                  }
+                  setMessages((prev) => [...prev, message])
+                }
+                continue
+              } catch {
+                // If parsing fails, fall through to normal handling
+              }
+            }
 
             // Filter out unwanted system messages
             const shouldSkip =
@@ -601,17 +676,26 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         setMessages((prev) => [...prev, aiMsg])
 
         const contextMessage = buildContextMessage(currentWorktree)
-        setPendingContext(contextMessage)
 
-        const startedSessionId = await startAISession(currentWorktree.path)
-        if (!startedSessionId) {
-          return
+        // Check if CLI supports ACP (Qwen, Gemini, AMP, Codex) or uses stdin/stdout (Claude)
+        if (supportsAcp(selectedCLI)) {
+          // Use session-based approach for ACP-compatible CLIs
+          setPendingContext(contextMessage)
+
+          const startedSessionId = await startAISession(currentWorktree.path)
+          if (!startedSessionId) {
+            return
+          }
+
+          // Don't try to send immediately, just set as pending
+          // The useEffect will handle sending when the session is ready
+          setPendingContext(contextMessage)
+          setContextSent(false)
+        } else if (usesStdinStdout(selectedCLI)) {
+          // Use direct stdin/stdout approach for Claude
+          await executeCommand(contextMessage, true)
+          setContextSent(true)
         }
-
-        // Don't try to send immediately, just set as pending
-        // The useEffect will handle sending when the session is ready
-        setPendingContext(contextMessage)
-        setContextSent(false)
       }
     } catch (error: any) {
       const errorMsg: Message = {

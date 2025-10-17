@@ -252,6 +252,14 @@ export const CLI_OPTIONS = Object.values(CLI_STRATEGIES)
 export const isAiCli = (mode: string): mode is Exclude<CLIType, 'command'> =>
   mode === 'gemini' || mode === 'qwen' || mode === 'amp' || mode === 'claude' || mode === 'codex'
 
+// CLIs that support ACP protocol (can use /api/session with persistent sessions)
+export const supportsAcp = (mode: string): boolean =>
+  mode === 'gemini' || mode === 'qwen' || mode === 'amp' || mode === 'codex'
+
+// CLIs that use stdin/stdout directly (use /api/execute)
+export const usesStdinStdout = (mode: string): boolean =>
+  mode === 'claude'
+
 export const getCliStrategy = (mode: CLIType): CliStrategy => CLI_STRATEGIES[mode]
 
 export function buildCliInvocation(
