@@ -43,8 +43,8 @@ export interface Column {
 const initialCards: Card[] = [
   {
     id: '1',
-    title: 'Background color design',
-    description: 'Change the background color to blue in the landing page',
+    title: 'Change board title',
+    description: 'Change the title Project Kanban Board to Giuseppe Concas Kanban Board',
     priority: 'high',
     columnId: 'todo',
   },

@@ -112,19 +112,19 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     }
   }
 
-  const startAISession = async (): Promise<boolean> => {
+  const startAISession = async (targetCwd?: string): Promise<boolean> => {
     const sessionId = `${card.id}-${Date.now()}`
     setAiSessionId(sessionId)
 
     try {
-    const response = await fetch('/api/session', {
+      const response = await fetch('/api/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'start',
           sessionId,
           mode: selectedCLI,
-          cwd: worktreeInfo ? worktreeInfo.path : workingDirectory,
+          cwd: targetCwd || (worktreeInfo ? worktreeInfo.path : workingDirectory),
         }),
       })
 
@@ -268,6 +268,36 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
       }
       return false
     }
+  }
+
+  const buildContextMessage = (worktree: {
+    path: string
+    branch: string
+    baseBranch: string
+    basePath: string
+  }) => {
+    const activeCLIOption = CLI_OPTIONS.find((opt) => opt.id === selectedCLI)
+
+    const toolSection = activeCLIOption?.displayTools?.length
+      ? `Available tools:\n- ${activeCLIOption.displayTools.join('\n- ')}`
+      : null
+
+    const guidanceSection = activeCLIOption?.guidance?.length
+      ? `Usage guidelines:\n- ${activeCLIOption.guidance.join('\n- ')}`
+      : null
+
+    const contextParts: Array<string | null> = [
+      `Task: ${card.title}`,
+      `Description: ${card.description}`,
+      `Priority: ${card.priority}`,
+      `Status: ${card.columnId.replace('-', ' ')}`,
+      `Working in: ${worktree.path}`,
+      toolSection,
+      guidanceSection,
+      'Please propose a short plan before making changes, then execute it step by step. Confirm when the task is complete.',
+    ]
+
+    return contextParts.filter((part): part is string => Boolean(part)).join('\n\n')
   }
 
   const handleSendPendingContext = async () => {
@@ -418,48 +448,58 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
 
   const handleStartTask = async () => {
     try {
-      // Save the original base directory
-      setBaseDirectory(workingDirectory)
+      let currentWorktree = worktreeInfo
 
-      // Create worktree
-      const response = await fetch('/api/git', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'createWorktree',
+      if (!currentWorktree) {
+        setBaseDirectory(workingDirectory)
+
+        const response = await fetch('/api/git', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'createWorktree',
+            basePath: workingDirectory,
+            taskId: card.id,
+          }),
+        })
+
+        const data = await response.json()
+        if (!data.success) {
+          throw new Error(data.error || 'Failed to create worktree')
+        }
+
+        currentWorktree = {
+          path: data.worktreePath,
+          branch: data.worktreeBranch,
+          baseBranch: data.baseBranch,
           basePath: workingDirectory,
-          taskId: card.id,
-        }),
-      })
+        }
 
-      const data = await response.json()
-      if (!data.success) {
-        throw new Error(data.error || 'Failed to create worktree')
+        setWorktreeInfo(currentWorktree)
+
+        const systemMsg: Message = {
+          id: generateMessageId(),
+          type: 'system',
+          content: `🌿 Created worktree for task:\n\nWorktree: ${data.worktreePath}\nBranch: ${data.worktreeBranch}\nBase: ${data.baseBranch}\n\nWorking directory: ${workingDirectory}\n\n✨ All commands will run in the worktree. When done, merge back to ${data.baseBranch}.`,
+          timestamp: new Date(),
+        }
+        setMessages([systemMsg])
+      } else {
+        const resumeMsg: Message = {
+          id: generateMessageId(),
+          type: 'system',
+          content: '🔄 Resuming AI session in existing worktree...',
+          timestamp: new Date(),
+        }
+        setMessages((prev) => [...prev, resumeMsg])
       }
 
-      // Store worktree info including the base path
-      setWorktreeInfo({
-        path: data.worktreePath,
-        branch: data.worktreeBranch,
-        baseBranch: data.baseBranch,
-        basePath: workingDirectory, // Keep original path
-      })
-
-      // DON'T update the displayed working directory - keep showing the original
-      // The worktree path will be used internally for commands
-
-      // Add system message
-      const systemMsg: Message = {
-        id: generateMessageId(),
-        type: 'system',
-        content: `🌿 Created worktree for task:\n\nWorktree: ${data.worktreePath}\nBranch: ${data.worktreeBranch}\nBase: ${data.baseBranch}\n\nWorking directory: ${workingDirectory}\n\n✨ All commands will run in the worktree. When done, merge back to ${data.baseBranch}.`,
-        timestamp: new Date(),
+      if (!currentWorktree) {
+        throw new Error('Worktree information is unavailable')
       }
-      setMessages([systemMsg])
 
       setTaskStarted(true)
 
-      // If AI CLI, start persistent session
       if (isAiCli(selectedCLI)) {
         const aiMsg: Message = {
           id: generateMessageId(),
@@ -469,41 +509,15 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         }
         setMessages((prev) => [...prev, aiMsg])
 
-        const sessionStarted = await startAISession()
+        const contextMessage = buildContextMessage(currentWorktree)
+        setPendingContext(contextMessage)
+
+        const sessionStarted = await startAISession(currentWorktree.path)
         if (!sessionStarted) {
           return
         }
 
-        // Give the agent a brief moment to finish setup
         await new Promise((resolve) => setTimeout(resolve, 500))
-
-        // Send initial context
-        const activeCLIOption = CLI_OPTIONS.find((opt) => opt.id === selectedCLI)
-
-        const toolSection = activeCLIOption?.displayTools?.length
-          ? `Available tools:\n- ${activeCLIOption.displayTools.join('\n- ')}`
-          : null
-
-        const guidanceSection = activeCLIOption?.guidance?.length
-          ? `Usage guidelines:\n- ${activeCLIOption.guidance.join('\n- ')}`
-          : null
-
-        const contextParts: Array<string | null> = [
-          `Task: ${card.title}`,
-          `Description: ${card.description}`,
-          `Priority: ${card.priority}`,
-          `Status: ${card.columnId.replace('-', ' ')}`,
-          `Working in: ${data.worktreePath}`,
-          toolSection,
-          guidanceSection,
-          'Please propose a short plan before making changes, then execute it step by step. Confirm when the task is complete.',
-        ]
-
-        const contextMessage = contextParts
-          .filter((part): part is string => Boolean(part))
-          .join('\n\n')
-
-        setPendingContext(contextMessage)
 
         const sent = await sendToAISession(contextMessage, { silent: true })
 
@@ -812,7 +826,74 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
 
             {/* Action Buttons */}
             <div className="flex gap-2">
-              {!taskStarted ? (
+              {worktreeInfo ? (
+                <>
+                  <button
+                    onClick={handleStopTask}
+                    className="
+                      flex-1 px-4 py-2 bg-red-600 hover:bg-red-700
+                      text-white rounded-lg text-sm font-medium
+                      transition-colors duration-200
+                      flex items-center justify-center gap-2
+                    "
+                  >
+                    <svg
+                      className="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                      />
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"
+                      />
+                    </svg>
+                    Stop Task
+                  </button>
+                  {isAiCli(selectedCLI) && (
+                    <button
+                      onClick={handleStartTask}
+                      disabled={isExecuting || aiSessionActive}
+                      className="
+                        flex-1 px-4 py-2 bg-green-600 hover:bg-green-700
+                        text-white rounded-lg text-sm font-medium
+                        transition-colors duration-200
+                        disabled:opacity-50 disabled:cursor-not-allowed
+                        flex items-center justify-center gap-2
+                      "
+                    >
+                      <svg
+                        className="w-4 h-4"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"
+                        />
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                        />
+                      </svg>
+                      {aiSessionActive ? 'Session Active' : 'Resume Session'}
+                    </button>
+                  )}
+                </>
+              ) : (
                 <button
                   onClick={handleStartTask}
                   disabled={isExecuting}
@@ -844,39 +925,6 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
                     />
                   </svg>
                   Start Task
-                </button>
-              ) : (
-                <button
-                  onClick={handleStopTask}
-                  disabled={!isExecuting}
-                  className="
-                    flex-1 px-4 py-2 bg-red-600 hover:bg-red-700
-                    text-white rounded-lg text-sm font-medium
-                    transition-colors duration-200
-                    disabled:opacity-50 disabled:cursor-not-allowed
-                    flex items-center justify-center gap-2
-                  "
-                >
-                  <svg
-                    className="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                    />
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"
-                    />
-                  </svg>
-                  Stop Task
                 </button>
               )}
             </div>
