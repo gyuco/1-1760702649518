@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { Card, Priority } from './KanbanBoard'
+import { DirectoryPicker } from './DirectoryPicker'
 
 interface DetailPanelProps {
   card: Card
@@ -77,6 +78,14 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
   const [contextSent, setContextSent] = useState(false)
   const [workingDirectory, setWorkingDirectory] = useState(process.cwd ? process.cwd() : '/tmp')
   const [taskStarted, setTaskStarted] = useState(false)
+  const [currentBranch, setCurrentBranch] = useState<string>('')
+  const [worktreeInfo, setWorktreeInfo] = useState<{
+    path: string
+    branch: string
+    baseBranch: string
+  } | null>(null)
+  const [showMergeDialog, setShowMergeDialog] = useState(false)
+  const [showDirectoryPicker, setShowDirectoryPicker] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
@@ -91,6 +100,32 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     setMessages([])
     setTaskStarted(false)
   }, [selectedCLI])
+
+  // Fetch current branch when panel opens
+  useEffect(() => {
+    if (isOpen && workingDirectory) {
+      fetchCurrentBranch()
+    }
+  }, [isOpen, workingDirectory])
+
+  const fetchCurrentBranch = async () => {
+    try {
+      const response = await fetch('/api/git', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'getBranch',
+          basePath: workingDirectory,
+        }),
+      })
+      const data = await response.json()
+      if (data.success) {
+        setCurrentBranch(data.branch)
+      }
+    } catch (error) {
+      console.error('Failed to fetch branch:', error)
+    }
+  }
 
   const executeCommand = async (command: string, skipUserMessage = false) => {
     if (!command.trim() || isExecuting) return
@@ -202,25 +237,69 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     }
   }
 
-  const handleStartTask = () => {
-    if (isAICLI(selectedCLI)) {
-      const contextMessage = `Task: ${card.title}\n\nDescription: ${card.description}\n\nPriority: ${card.priority}\nStatus: ${card.columnId.replace('-', ' ')}\n\nPlease help me with this task. What would you suggest?`
+  const handleStartTask = async () => {
+    try {
+      // Create worktree
+      const response = await fetch('/api/git', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'createWorktree',
+          basePath: workingDirectory,
+          taskId: card.id,
+        }),
+      })
 
-      // Add system message showing context was sent
+      const data = await response.json()
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to create worktree')
+      }
+
+      // Store worktree info
+      setWorktreeInfo({
+        path: data.worktreePath,
+        branch: data.worktreeBranch,
+        baseBranch: data.baseBranch,
+      })
+
+      // Update working directory to worktree path
+      setWorkingDirectory(data.worktreePath)
+
+      // Add system message
       const systemMsg: Message = {
         id: Date.now().toString(),
         type: 'system',
-        content: '📋 Task started - Context sent to AI',
+        content: `🌿 Created worktree:\nPath: ${data.worktreePath}\nBranch: ${data.worktreeBranch}\nBase: ${data.baseBranch}`,
         timestamp: new Date(),
       }
       setMessages([systemMsg])
-      setContextSent(true)
+
       setTaskStarted(true)
 
-      // Execute with context
-      executeCommand(contextMessage, false)
-    } else {
-      setTaskStarted(true)
+      // If AI CLI, send context
+      if (isAICLI(selectedCLI)) {
+        const contextMessage = `Task: ${card.title}\n\nDescription: ${card.description}\n\nPriority: ${card.priority}\nStatus: ${card.columnId.replace('-', ' ')}\n\nWorking in: ${data.worktreePath}\n\nPlease help me with this task. What would you suggest?`
+
+        const aiMsg: Message = {
+          id: Date.now().toString(),
+          type: 'system',
+          content: '📋 Context sent to AI',
+          timestamp: new Date(),
+        }
+        setMessages((prev) => [...prev, aiMsg])
+        setContextSent(true)
+
+        // Execute with context
+        setTimeout(() => executeCommand(contextMessage, false), 500)
+      }
+    } catch (error: any) {
+      const errorMsg: Message = {
+        id: Date.now().toString(),
+        type: 'error',
+        content: `Failed to start task: ${error.message}`,
+        timestamp: new Date(),
+      }
+      setMessages([errorMsg])
     }
   }
 
@@ -238,6 +317,83 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
       timestamp: new Date(),
     }
     setMessages((prev) => [...prev, stopMsg])
+
+    // Show merge dialog if worktree exists
+    if (worktreeInfo) {
+      setShowMergeDialog(true)
+    }
+  }
+
+  const handleMergeWorktree = async () => {
+    if (!worktreeInfo) return
+
+    try {
+      const response = await fetch('/api/git', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'mergeWorktree',
+          basePath: workingDirectory.replace(worktreeInfo.path, '').split('/worktrees')[0],
+          worktreePath: worktreeInfo.path,
+          worktreeBranch: worktreeInfo.branch,
+        }),
+      })
+
+      const data = await response.json()
+      if (data.success) {
+        const mergeMsg: Message = {
+          id: Date.now().toString(),
+          type: 'system',
+          content: '✅ Worktree merged successfully!',
+          timestamp: new Date(),
+        }
+        setMessages((prev) => [...prev, mergeMsg])
+      } else {
+        throw new Error(data.error || 'Merge failed')
+      }
+    } catch (error: any) {
+      const errorMsg: Message = {
+        id: Date.now().toString(),
+        type: 'error',
+        content: `Merge failed: ${error.message}`,
+        timestamp: new Date(),
+      }
+      setMessages((prev) => [...prev, errorMsg])
+    } finally {
+      setShowMergeDialog(false)
+      setWorktreeInfo(null)
+    }
+  }
+
+  const handleCleanupWorktree = async () => {
+    if (!worktreeInfo) return
+
+    try {
+      const response = await fetch('/api/git', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'cleanupWorktree',
+          basePath: workingDirectory.replace(worktreeInfo.path, '').split('/worktrees')[0],
+          worktreePath: worktreeInfo.path,
+          worktreeBranch: worktreeInfo.branch,
+        }),
+      })
+
+      const data = await response.json()
+      const cleanupMsg: Message = {
+        id: Date.now().toString(),
+        type: 'system',
+        content: '🧹 Worktree cleaned up (changes discarded)',
+        timestamp: new Date(),
+      }
+      setMessages((prev) => [...prev, cleanupMsg])
+    } catch (error: any) {
+      console.error('Cleanup error:', error)
+    } finally {
+      setShowMergeDialog(false)
+      setWorktreeInfo(null)
+    }
   }
 
   return (
@@ -340,21 +496,52 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
               <label className="text-sm font-medium text-gray-700 dark:text-gray-300 min-w-[60px]">
                 Dir:
               </label>
-              <input
-                type="text"
-                value={workingDirectory}
-                onChange={(e) => setWorkingDirectory(e.target.value)}
-                disabled={isExecuting || taskStarted}
-                placeholder="/path/to/working/directory"
-                className="
-                  flex-1 px-3 py-2 bg-white dark:bg-slate-900
-                  border border-gray-300 dark:border-slate-600
-                  rounded-lg text-sm text-gray-900 dark:text-gray-100
-                  font-mono
-                  focus:outline-none focus:ring-2 focus:ring-blue-500
-                  disabled:opacity-50 disabled:cursor-not-allowed
-                "
-              />
+              <div className="flex-1 flex items-center gap-2">
+                <div className="flex-1 px-3 py-2 bg-gray-50 dark:bg-slate-900 border border-gray-300 dark:border-slate-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 font-mono truncate">
+                  {workingDirectory || '/path/to/working/directory'}
+                </div>
+                <button
+                  onClick={() => setShowDirectoryPicker(true)}
+                  disabled={isExecuting || taskStarted}
+                  className="
+                    px-4 py-2 bg-blue-600 hover:bg-blue-700
+                    text-white rounded-lg text-sm font-medium
+                    transition-colors duration-200
+                    disabled:opacity-50 disabled:cursor-not-allowed
+                    flex items-center gap-2 whitespace-nowrap
+                  "
+                >
+                  <svg
+                    className="w-4 h-4"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
+                    />
+                  </svg>
+                  Browse
+                </button>
+                {currentBranch && (
+                  <span className="flex items-center gap-1 px-3 py-2 bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 rounded-lg text-xs font-medium whitespace-nowrap">
+                    <svg
+                      className="w-3 h-3"
+                      fill="currentColor"
+                      viewBox="0 0 16 16"
+                    >
+                      <path
+                        fillRule="evenodd"
+                        d="M11.5 2a1.5 1.5 0 100 3 1.5 1.5 0 000-3zM9.05 3a2.5 2.5 0 014.9 0H16v1h-2.05a2.5 2.5 0 01-4.9 0H0V3h9.05zM4.5 7a1.5 1.5 0 100 3 1.5 1.5 0 000-3zM2.05 8a2.5 2.5 0 014.9 0H16v1H6.95a2.5 2.5 0 01-4.9 0H0V8h2.05z"
+                      />
+                    </svg>
+                    {currentBranch}
+                  </span>
+                )}
+              </div>
             </div>
 
             {/* Action Buttons */}
@@ -649,6 +836,124 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
           </form>
         </div>
       </div>
+
+      {/* Merge Dialog */}
+      {showMergeDialog && worktreeInfo && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          {/* Dialog Overlay */}
+          <div
+            className="absolute inset-0 bg-black/50"
+            onClick={() => setShowMergeDialog(false)}
+          />
+
+          {/* Dialog Content */}
+          <div className="relative bg-white dark:bg-slate-800 rounded-xl shadow-2xl max-w-md w-full p-6 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-950 flex items-center justify-center flex-shrink-0">
+                <svg
+                  className="w-5 h-5 text-blue-600 dark:text-blue-400"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"
+                  />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-1">
+                  Merge Worktree?
+                </h3>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mb-3">
+                  Do you want to merge the changes from the worktree back to the base branch?
+                </p>
+                <div className="bg-gray-50 dark:bg-slate-900 rounded-lg p-3 space-y-1 text-xs font-mono">
+                  <div className="flex justify-between">
+                    <span className="text-gray-500 dark:text-gray-400">Branch:</span>
+                    <span className="text-gray-900 dark:text-gray-100">{worktreeInfo.branch}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500 dark:text-gray-400">Base:</span>
+                    <span className="text-gray-900 dark:text-gray-100">{worktreeInfo.baseBranch}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500 dark:text-gray-400">Path:</span>
+                    <span className="text-gray-900 dark:text-gray-100 truncate">{worktreeInfo.path}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="flex gap-3">
+              <button
+                onClick={handleMergeWorktree}
+                className="
+                  flex-1 px-4 py-2.5 bg-green-600 hover:bg-green-700
+                  text-white rounded-lg font-medium
+                  transition-colors duration-200
+                  flex items-center justify-center gap-2
+                "
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M5 13l4 4L19 7"
+                  />
+                </svg>
+                Merge Changes
+              </button>
+              <button
+                onClick={handleCleanupWorktree}
+                className="
+                  flex-1 px-4 py-2.5 bg-red-600 hover:bg-red-700
+                  text-white rounded-lg font-medium
+                  transition-colors duration-200
+                  flex items-center justify-center gap-2
+                "
+              >
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                  />
+                </svg>
+                Discard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Directory Picker */}
+      <DirectoryPicker
+        isOpen={showDirectoryPicker}
+        currentPath={workingDirectory}
+        onSelect={(selectedPath) => {
+          setWorkingDirectory(selectedPath)
+          fetchCurrentBranch()
+          setShowDirectoryPicker(false)
+        }}
+        onClose={() => setShowDirectoryPicker(false)}
+      />
     </>
   )
 }
