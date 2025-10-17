@@ -83,6 +83,12 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
   const abortControllerRef = useRef<AbortController | null>(null)
   const sendToAISessionRef = useRef<(message: string, options?: any) => Promise<boolean>>()
 
+  // For Claude streaming - track partial messages
+  const streamingTextRef = useRef<Map<number, string>>(new Map())
+  const streamingThinkingRef = useRef<Map<number, string>>(new Map())
+  const streamingToolsRef = useRef<Map<number, { name: string; input: string }>>(new Map())
+  const messageEntriesRef = useRef<Map<number, string>>(new Map()) // Maps content block index to message ID
+
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -498,57 +504,129 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
               try {
                 const claudeMessage = JSON.parse(data.data)
 
-                // Handle different Claude message types
-                if (claudeMessage.type === 'assistant' && claudeMessage.message?.content) {
-                  for (const contentItem of claudeMessage.message.content) {
-                    if (contentItem.type === 'text' && contentItem.text) {
-                      const message: Message = {
-                        id: generateMessageId(),
+                // Skip messages with session_id/uuid (internal metadata, not for display)
+                if (claudeMessage.session_id || claudeMessage.uuid || claudeMessage.parent_tool_use_id !== undefined) {
+                  continue
+                }
+
+                // Handle Claude stream events
+                if (claudeMessage.type === 'stream_event' && claudeMessage.event) {
+                  const event = claudeMessage.event
+                  const index = event.index
+
+                  if (event.type === 'message_start') {
+                    // Clear streaming state for new message
+                    streamingTextRef.current.clear()
+                    streamingThinkingRef.current.clear()
+                    streamingToolsRef.current.clear()
+                    messageEntriesRef.current.clear()
+                  } else if (event.type === 'content_block_start') {
+                    const block = event.content_block
+                    if (block?.type === 'text') {
+                      streamingTextRef.current.set(index, block.text || '')
+                      const msgId = generateMessageId()
+                      messageEntriesRef.current.set(index, msgId)
+                      setMessages((prev) => [...prev, {
+                        id: msgId,
                         type: 'stdout',
-                        content: contentItem.text,
+                        content: block.text || '',
                         timestamp: new Date(),
-                      }
-                      setMessages((prev) => [...prev, message])
-                    } else if (contentItem.type === 'thinking' && contentItem.thinking) {
-                      const message: Message = {
-                        id: generateMessageId(),
+                      }])
+                    } else if (block?.type === 'thinking') {
+                      streamingThinkingRef.current.set(index, block.thinking || '')
+                      const msgId = generateMessageId()
+                      messageEntriesRef.current.set(index, msgId)
+                      setMessages((prev) => [...prev, {
+                        id: msgId,
                         type: 'system',
-                        content: `💭 Thinking: ${contentItem.thinking}`,
+                        content: `💭 ${block.thinking || ''}`,
                         timestamp: new Date(),
-                      }
-                      setMessages((prev) => [...prev, message])
-                    } else if (contentItem.type === 'tool_use') {
-                      const toolName = contentItem.name || 'unknown'
-                      const message: Message = {
-                        id: generateMessageId(),
+                      }])
+                    } else if (block?.type === 'tool_use') {
+                      streamingToolsRef.current.set(index, { name: block.name || '', input: '' })
+                      const msgId = generateMessageId()
+                      messageEntriesRef.current.set(index, msgId)
+                      setMessages((prev) => [...prev, {
+                        id: msgId,
                         type: 'system',
-                        content: `🔧 Using tool: ${toolName}`,
+                        content: `🔧 ${block.name || 'Tool'}`,
                         timestamp: new Date(),
+                      }])
+                    }
+                  } else if (event.type === 'content_block_delta') {
+                    const delta = event.delta
+                    const msgId = messageEntriesRef.current.get(index)
+
+                    if (delta?.type === 'text_delta' && delta.text) {
+                      const current = streamingTextRef.current.get(index) || ''
+                      const updated = current + delta.text
+                      streamingTextRef.current.set(index, updated)
+
+                      if (msgId) {
+                        setMessages((prev) => prev.map(m =>
+                          m.id === msgId ? { ...m, content: updated } : m
+                        ))
                       }
-                      setMessages((prev) => [...prev, message])
+                    } else if (delta?.type === 'thinking_delta' && delta.thinking) {
+                      const current = streamingThinkingRef.current.get(index) || ''
+                      const updated = current + delta.thinking
+                      streamingThinkingRef.current.set(index, updated)
+
+                      if (msgId) {
+                        setMessages((prev) => prev.map(m =>
+                          m.id === msgId ? { ...m, content: `💭 ${updated}` } : m
+                        ))
+                      }
+                    } else if (delta?.type === 'input_json_delta' && delta.partial_json) {
+                      const tool = streamingToolsRef.current.get(index)
+                      if (tool) {
+                        tool.input += delta.partial_json
+                        streamingToolsRef.current.set(index, tool)
+                      }
                     }
-                  }
-                } else if (claudeMessage.type === 'user' && claudeMessage.message?.content) {
-                  // Skip user messages or show tool results
-                  for (const contentItem of claudeMessage.message.content) {
-                    if (contentItem.type === 'tool_result' && contentItem.content) {
-                      // Tool results are typically shown inline, skip or format minimally
-                      continue
+                  } else if (event.type === 'content_block_stop') {
+                    // Block completed - no action needed, just don't log as unknown
+                  } else if (event.type === 'message_delta') {
+                    // Message metadata updated (e.g., stop_reason) - no action needed
+                  } else if (event.type === 'message_stop') {
+                    // Message completed - trigger merge dialog
+                    const completionMsg: Message = {
+                      id: generateMessageId(),
+                      type: 'system',
+                      content: '✅ Task completed. Review changes and merge when ready.',
+                      timestamp: new Date(),
                     }
+                    setMessages((prev) => [...prev, completionMsg])
+                    setIsExecuting(false)
+                    setTaskStarted(false)
+                    setShowMergeDialog(true)
+                  } else {
+                    // Unknown event type - log for debugging but don't show raw JSON
+                    console.log('Unknown Claude stream event type:', event.type, event)
                   }
+                  continue
+                } else if (claudeMessage.type === 'assistant') {
+                  // Handle assistant message (usually contains content blocks already streamed)
+                  // We've already handled the content via stream events, so skip this
+                  console.log('Assistant message received (already streamed)')
+                  continue
+                } else if (claudeMessage.type === 'user') {
+                  // Handle user message echo - skip displaying as we already show user messages
+                  console.log('User message echo received (already displayed)')
+                  continue
                 } else if (claudeMessage.type === 'system') {
-                  const subtype = claudeMessage.subtype || 'info'
-                  if (subtype !== 'init') {
+                  if (claudeMessage.subtype !== 'init') {
                     const message: Message = {
                       id: generateMessageId(),
                       type: 'system',
-                      content: `System: ${subtype}`,
+                      content: `System: ${claudeMessage.subtype || 'info'}`,
                       timestamp: new Date(),
                     }
                     setMessages((prev) => [...prev, message])
                   }
+                  continue
                 } else if (claudeMessage.type === 'result') {
-                  const stopReason = claudeMessage.result?.stop_reason || 'unknown'
+                  const stopReason = claudeMessage.stop_reason || claudeMessage.result?.stop_reason || 'unknown'
                   const message: Message = {
                     id: generateMessageId(),
                     type: 'system',
@@ -556,10 +634,17 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
                     timestamp: new Date(),
                   }
                   setMessages((prev) => [...prev, message])
+                  setIsExecuting(false)
+                  setTaskStarted(false)
+                  setShowMergeDialog(true)
+                  continue
+                } else {
+                  // Unknown message type - log for debugging but don't show raw JSON
+                  console.log('Unknown Claude message type:', claudeMessage.type, claudeMessage)
                 }
-                continue
-              } catch {
-                // If parsing fails, fall through to normal handling
+              } catch (parseError) {
+                // If parsing fails, it might be a regular output line, fall through
+                console.log('Failed to parse Claude message, treating as regular output:', parseError)
               }
             }
 
