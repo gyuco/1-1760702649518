@@ -44,9 +44,9 @@ const initialCards: Card[] = [
   {
     id: '1',
     title: 'Change board title',
-    description: 'Change the title demo board 02 to demo board 03bis',
+    description: 'Changed the title from demo board 02 to demo board 03bis',
     priority: 'high',
-    columnId: 'todo',
+    columnId: 'done',
   },
   {
     id: '2',
@@ -100,10 +100,10 @@ const initialCards: Card[] = [
 ]
 
 const initialColumns: Column[] = [
-  { id: 'todo', title: 'To Do', cardIds: ['1', '2'] },
+  { id: 'todo', title: 'To Do', cardIds: ['2'] },
   { id: 'in-progress', title: 'In Progress', cardIds: ['3', '4'] },
   { id: 'in-review', title: 'In Review', cardIds: ['5', '6'] },
-  { id: 'done', title: 'Done', cardIds: ['7', '8'] },
+  { id: 'done', title: 'Done', cardIds: ['1', '7', '8'] },
 ]
 
 export function KanbanBoard() {
