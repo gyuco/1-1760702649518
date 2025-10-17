@@ -79,6 +79,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
   const [aiSessionActive, setAiSessionActive] = useState(false)
   const [worktreeDiff, setWorktreeDiff] = useState<string>('')
   const [worktreeStatus, setWorktreeStatus] = useState<string>('')
+  const [isDiffExpanded, setIsDiffExpanded] = useState(false)
   const [pendingContext, setPendingContext] = useState<string | null>(null)
   const [pendingContextRetries, setPendingContextRetries] = useState(0)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -1583,11 +1584,72 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
                 
                 {/* Diff Preview */}
                 {worktreeDiff && (
-                  <div className="mt-3 bg-gray-50 dark:bg-slate-900 rounded-lg p-3 max-h-64 overflow-y-auto">
-                    <p className="text-xs font-medium text-gray-700 dark:text-gray-300 mb-2">
-                      📝 Changes Preview:
-                    </p>
-                    <pre className="text-xs text-gray-800 dark:text-gray-200 whitespace-pre-wrap font-mono">
+                  <div className="mt-3 bg-gray-50 dark:bg-slate-900 rounded-lg p-3">
+                    <div className="flex justify-between items-center mb-2">
+                      <p className="text-xs font-medium text-gray-700 dark:text-gray-300">
+                        📝 Changes Preview:
+                      </p>
+                      <div className="flex gap-2">
+                        <button 
+                          onClick={() => setIsDiffExpanded(!isDiffExpanded)}
+                          className="text-xs px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded"
+                        >
+                          {isDiffExpanded ? 'Collapse' : 'Expand'} Diff
+                        </button>
+                        <button 
+                          onClick={() => {
+                            const fullDiff = worktreeDiff;
+                            const win = window.open('', '_blank');
+                            if (win) {
+                              win.document.write(`
+                                <html>
+                                  <head>
+                                    <title>Full Diff - ${worktreeInfo?.branch || 'Worktree'}</title>
+                                    <style>
+                                      body { 
+                                        font-family: monospace; 
+                                        margin: 20px; 
+                                        background-color: #f8fafc;
+                                        color: #0f172a;
+                                      }
+                                      pre { 
+                                        white-space: pre-wrap; 
+                                        word-wrap: break-word; 
+                                        background-color: #f1f5f9;
+                                        padding: 15px;
+                                        border-radius: 4px;
+                                        overflow: auto;
+                                        max-height: calc(100vh - 80px);
+                                      }
+                                      .close-btn {
+                                        position: fixed;
+                                        top: 10px;
+                                        right: 10px;
+                                        padding: 5px 10px;
+                                        background-color: #dc2626;
+                                        color: white;
+                                        border: none;
+                                        border-radius: 4px;
+                                        cursor: pointer;
+                                      }
+                                    </style>
+                                  </head>
+                                  <body>
+                                    <button class="close-btn" onclick="window.close()">Close</button>
+                                    <pre>${fullDiff.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+                                  </body>
+                                </html>
+                              `);
+                              win.document.close();
+                            }
+                          }}
+                          className="text-xs px-2 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded"
+                        >
+                          Open Full Diff
+                        </button>
+                      </div>
+                    </div>
+                    <pre className={`text-xs text-gray-800 dark:text-gray-200 whitespace-pre-wrap font-mono ${isDiffExpanded ? 'max-h-[70vh] overflow-y-auto' : 'max-h-64 overflow-y-auto'}`}>
                       {worktreeDiff}
                     </pre>
                   </div>

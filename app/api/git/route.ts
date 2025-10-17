@@ -102,6 +102,12 @@ export async function POST(request: NextRequest) {
         const status = await runGitCommand('git status --porcelain', worktreePath)
         const hasChanges = status.length > 0
 
+        // Get diff of changes
+        let diff = ''
+        if (hasChanges) {
+          diff = await runGitCommand('git diff', worktreePath)
+        }
+
         // Get commit count
         let commitCount = 0
         try {
@@ -122,6 +128,7 @@ export async function POST(request: NextRequest) {
           hasChanges,
           commitCount,
           status,
+          diff,
         })
       }
 
