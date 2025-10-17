@@ -43,8 +43,8 @@ export interface Column {
 const initialCards: Card[] = [
   {
     id: '1',
-    title: 'Design landing page',
-    description: 'Create mockups for the new landing page with modern UI',
+    title: 'Background color design',
+    description: 'Change the background color to blue in the landing page',
     priority: 'high',
     columnId: 'todo',
   },

@@ -69,6 +69,13 @@ const CLI_OPTIONS: CLIOption[] = [
 // Helper to check if CLI is AI-based
 const isAICLI = (cliType: CLIType) => cliType === 'gemini' || cliType === 'qwen'
 
+// Generate unique ID for messages
+let messageIdCounter = 0
+const generateMessageId = () => {
+  messageIdCounter++
+  return `${Date.now()}-${messageIdCounter}-${Math.random().toString(36).substring(2, 9)}`
+}
+
 export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
   const priorityStyle = priorityStyles[card.priority]
   const [messages, setMessages] = useState<Message[]>([])
@@ -133,7 +140,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     // Add user message (unless skipped for context initialization)
     if (!skipUserMessage) {
       const userMessage: Message = {
-        id: Date.now().toString(),
+        id: generateMessageId(),
         type: 'user',
         content: command,
         timestamp: new Date(),
@@ -198,7 +205,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
           try {
             const data = JSON.parse(line)
             const message: Message = {
-              id: `${Date.now()}-${Math.random()}`,
+              id: generateMessageId(),
               type: data.type === 'stdout' ? 'stdout' : data.type === 'stderr' ? 'stderr' : 'system',
               content: data.data,
               timestamp: new Date(),
@@ -212,7 +219,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     } catch (error: any) {
       if (error.name !== 'AbortError') {
         const errorMessage: Message = {
-          id: Date.now().toString(),
+          id: generateMessageId(),
           type: 'error',
           content: error.message || 'Unknown error occurred',
           timestamp: new Date(),
@@ -267,7 +274,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
 
       // Add system message
       const systemMsg: Message = {
-        id: Date.now().toString(),
+        id: generateMessageId(),
         type: 'system',
         content: `🌿 Created worktree:\nPath: ${data.worktreePath}\nBranch: ${data.worktreeBranch}\nBase: ${data.baseBranch}`,
         timestamp: new Date(),
@@ -281,7 +288,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         const contextMessage = `Task: ${card.title}\n\nDescription: ${card.description}\n\nPriority: ${card.priority}\nStatus: ${card.columnId.replace('-', ' ')}\n\nWorking in: ${data.worktreePath}\n\nPlease help me with this task. What would you suggest?`
 
         const aiMsg: Message = {
-          id: Date.now().toString(),
+          id: generateMessageId(),
           type: 'system',
           content: '📋 Context sent to AI',
           timestamp: new Date(),
@@ -294,7 +301,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
       }
     } catch (error: any) {
       const errorMsg: Message = {
-        id: Date.now().toString(),
+        id: generateMessageId(),
         type: 'error',
         content: `Failed to start task: ${error.message}`,
         timestamp: new Date(),
@@ -311,7 +318,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     setIsExecuting(false)
 
     const stopMsg: Message = {
-      id: Date.now().toString(),
+      id: generateMessageId(),
       type: 'system',
       content: '⚠️ Task stopped by user',
       timestamp: new Date(),
@@ -342,7 +349,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
       const data = await response.json()
       if (data.success) {
         const mergeMsg: Message = {
-          id: Date.now().toString(),
+          id: generateMessageId(),
           type: 'system',
           content: '✅ Worktree merged successfully!',
           timestamp: new Date(),
@@ -353,7 +360,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
       }
     } catch (error: any) {
       const errorMsg: Message = {
-        id: Date.now().toString(),
+        id: generateMessageId(),
         type: 'error',
         content: `Merge failed: ${error.message}`,
         timestamp: new Date(),
@@ -382,7 +389,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
 
       const data = await response.json()
       const cleanupMsg: Message = {
-        id: Date.now().toString(),
+        id: generateMessageId(),
         type: 'system',
         content: '🧹 Worktree cleaned up (changes discarded)',
         timestamp: new Date(),
