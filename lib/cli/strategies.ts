@@ -112,8 +112,8 @@ export const CLI_STRATEGIES: Record<CLIType, CliStrategy> = {
     id: 'qwen',
     name: 'Qwen AI',
     description: 'Qwen Code CLI with ACP support',
-    baseCommand: ['npx', '-y', '@qwen-code/qwen-code@0.0.14'],
-    staticArgs: ['--experimental-acp', '--approval-mode', 'auto_edit'],
+    baseCommand: ['qwen'],
+    staticArgs: ['--experimental-acp', '--approval-mode', 'auto-edit'],
     allowedTools: [...QWEN_ALLOWED_TOOLS],
     env: {
       NODE_NO_WARNINGS: '1',

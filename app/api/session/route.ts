@@ -32,22 +32,68 @@ const sessions = new Map<string, SessionState>()
 
 const encoder = new TextEncoder()
 
-function formatNotification(notification: AcpNotification): string {
-  switch (notification.type) {
-    case 'session_update':
-      return JSON.stringify({
-        event: 'session_update',
-        payload: notification.payload,
-      })
-    case 'request_permission':
-      return JSON.stringify({
-        event: 'request_permission',
-        payload: notification.payload,
-      })
-    case 'log':
-    default:
-      return notification.payload
+function formatNotification(notification: AcpNotification): string | null {
+  if (notification.type === 'session_update') {
+    const update = (notification.payload as any)?.update
+    if (!update) {
+      return null
+    }
+
+    const kind = update.sessionUpdate
+    switch (kind) {
+      case 'agent_message_chunk': {
+        const text = update.content?.text
+        return typeof text === 'string' && text.trim().length > 0 ? text : null
+      }
+      case 'plan': {
+        const entries: Array<{ content?: string; status?: string }> = Array.isArray(
+          update.entries
+        )
+          ? update.entries
+          : []
+        if (!entries.length) {
+          return null
+        }
+        const serialized = entries
+          .map((entry, index) => {
+            const status = entry.status ? entry.status.toUpperCase() : 'PENDING'
+            const content = entry.content ?? ''
+            return `${index + 1}. [${status}] ${content}`
+          })
+          .join('\n')
+        return `📝 Plan:\n${serialized}`
+      }
+      case 'tool_call': {
+        const title = update.title || update.kind || 'tool call'
+        return `🔧 Tool call started: ${title}`
+      }
+      case 'tool_call_update': {
+        const status = update.status || 'in_progress'
+        const title = update.title || update.kind || 'tool call'
+        return `🔧 Tool call update (${title}): ${status}`
+      }
+      case 'tool_call_output': {
+        const output = update.content?.text || update.content || ''
+        return typeof output === 'string' && output.trim().length
+          ? `🔧 Tool output:\n${output}`
+          : null
+      }
+      default:
+        return null
+    }
   }
+
+  if (notification.type === 'request_permission') {
+    const toolCall = (notification.payload as any)?.toolCall
+    const name = toolCall?.title || toolCall?.toolCallId || 'tool'
+    return `⚠️ Permission requested for ${name}.`
+  }
+
+  if (notification.type === 'log') {
+    return notification.payload
+  }
+
+  return null
 }
 
 function safeStringify(input: unknown) {
@@ -175,9 +221,13 @@ export async function POST(request: NextRequest) {
           sessions.set(sessionId, sessionState)
 
           const handleNotification = (notification: AcpNotification) => {
+            const formatted = formatNotification(notification)
+            if (!formatted) {
+              return
+            }
             send({
               type: 'stdout',
-              data: formatNotification(notification),
+              data: formatted,
             })
           }
 

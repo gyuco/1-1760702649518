@@ -69,6 +69,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
   const [showDirectoryPicker, setShowDirectoryPicker] = useState(false)
   const [aiSessionId, setAiSessionId] = useState<string | null>(null)
   const [aiSessionActive, setAiSessionActive] = useState(false)
+  const [pendingContext, setPendingContext] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
@@ -82,6 +83,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     setContextSent(false)
     setMessages([])
     setTaskStarted(false)
+    setPendingContext(null)
   }, [selectedCLI])
 
   // Fetch current branch when panel opens
@@ -110,12 +112,12 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     }
   }
 
-  const startAISession = async () => {
+  const startAISession = async (): Promise<boolean> => {
     const sessionId = `${card.id}-${Date.now()}`
     setAiSessionId(sessionId)
 
     try {
-      const response = await fetch('/api/session', {
+    const response = await fetch('/api/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -156,14 +158,32 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
                 // Filter out unwanted system messages
                 const shouldSkip =
                   data.type === 'start' ||
-                  (data.type === 'close' && data.data.includes('code 0')) ||
                   data.data.includes('Process exited with code 0') ||
                   data.data.includes('Executing:')
+
+                if (data.type === 'close') {
+                  const isClean = data.data.includes('code 0')
+                  const closeMessage: Message = {
+                    id: generateMessageId(),
+                    type: isClean ? 'system' : 'error',
+                    content: isClean
+                      ? 'Session closed by the agent.'
+                      : `Session ended unexpectedly: ${data.data}`,
+                    timestamp: new Date(),
+                  }
+                  setMessages((prev) => [...prev, closeMessage])
+                  continue
+                }
 
                 if (!shouldSkip && data.data.trim()) {
                   const message: Message = {
                     id: generateMessageId(),
-                    type: data.type === 'stdout' ? 'stdout' : data.type === 'stderr' ? 'stderr' : 'system',
+                    type:
+                      data.type === 'stdout'
+                        ? 'stdout'
+                        : data.type === 'stderr'
+                        ? 'stderr'
+                        : 'system',
                     content: data.data,
                     timestamp: new Date(),
                   }
@@ -179,10 +199,13 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         } finally {
           setAiSessionActive(false)
           setAiSessionId(null)
+          setTaskStarted(false)
+          setContextSent(false)
         }
       }
 
       readLoop()
+      return true
     } catch (error: any) {
       const errorMessage: Message = {
         id: generateMessageId(),
@@ -192,12 +215,27 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
       }
       setMessages((prev) => [...prev, errorMessage])
       setAiSessionActive(false)
+      setTaskStarted(false)
+      return false
     }
   }
 
-  const sendToAISession = async (message: string) => {
+  const sendToAISession = async (
+    message: string,
+    options: { silent?: boolean } = {}
+  ): Promise<boolean> => {
     if (!aiSessionId || !aiSessionActive) {
-      return
+      if (!options.silent) {
+        const errorMessage: Message = {
+          id: generateMessageId(),
+          type: 'error',
+          content:
+            'AI session is not running. Review the latest logs and press "Start Task" to reconnect.',
+          timestamp: new Date(),
+        }
+        setMessages((prev) => [...prev, errorMessage])
+      }
+      return false
     }
 
     try {
@@ -217,14 +255,37 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
           (payload && payload.error) || `Request failed with status ${response.status}`
         throw new Error(errorText)
       }
+      return true
     } catch (error: any) {
-      const errorMessage: Message = {
+      if (!options.silent) {
+        const errorMessage: Message = {
+          id: generateMessageId(),
+          type: 'error',
+          content: error?.message || 'Failed to send message',
+          timestamp: new Date(),
+        }
+        setMessages((prev) => [...prev, errorMessage])
+      }
+      return false
+    }
+  }
+
+  const handleSendPendingContext = async () => {
+    if (!pendingContext) {
+      return
+    }
+
+    const sent = await sendToAISession(pendingContext)
+    if (sent) {
+      const contextMsg: Message = {
         id: generateMessageId(),
-        type: 'error',
-        content: error.message || 'Failed to send message',
+        type: 'system',
+        content: '📋 Context sent to AI',
         timestamp: new Date(),
       }
-      setMessages((prev) => [...prev, errorMessage])
+      setMessages((prev) => [...prev, contextMsg])
+      setContextSent(true)
+      setPendingContext(null)
     }
   }
 
@@ -252,7 +313,8 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         const errorMessage: Message = {
           id: generateMessageId(),
           type: 'error',
-          content: 'Start the AI session before sending commands.',
+          content:
+            'AI session is not running. Review the latest logs and press "Start Task" to reconnect.',
           timestamp: new Date(),
         }
         setMessages((prev) => [...prev, errorMessage])
@@ -407,11 +469,13 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         }
         setMessages((prev) => [...prev, aiMsg])
 
-        // Start AI session first
-        await startAISession()
+        const sessionStarted = await startAISession()
+        if (!sessionStarted) {
+          return
+        }
 
-        // Wait a bit for session to initialize
-        await new Promise(resolve => setTimeout(resolve, 1000))
+        // Give the agent a brief moment to finish setup
+        await new Promise((resolve) => setTimeout(resolve, 500))
 
         // Send initial context
         const activeCLIOption = CLI_OPTIONS.find((opt) => opt.id === selectedCLI)
@@ -439,17 +503,31 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
           .filter((part): part is string => Boolean(part))
           .join('\n\n')
 
-        const contextMsg: Message = {
-          id: generateMessageId(),
-          type: 'system',
-          content: '📋 Context sent to AI',
-          timestamp: new Date(),
-        }
-        setMessages((prev) => [...prev, contextMsg])
-        setContextSent(true)
+        setPendingContext(contextMessage)
 
-        // Send context to session
-        setTimeout(() => executeCommand(contextMessage, false), 500)
+        const sent = await sendToAISession(contextMessage, { silent: true })
+
+        if (sent) {
+          const contextMsg: Message = {
+            id: generateMessageId(),
+            type: 'system',
+            content: '📋 Context sent to AI',
+            timestamp: new Date(),
+          }
+          setMessages((prev) => [...prev, contextMsg])
+          setContextSent(true)
+          setPendingContext(null)
+        } else {
+          const warningMsg: Message = {
+            id: generateMessageId(),
+            type: 'error',
+            content:
+              'Failed to send the initial context automatically. Use the “Send Context” button below once the session is ready.',
+            timestamp: new Date(),
+          }
+          setMessages((prev) => [...prev, warningMsg])
+          setContextSent(false)
+        }
       }
     } catch (error: any) {
       const errorMsg: Message = {
@@ -459,6 +537,8 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         timestamp: new Date(),
       }
       setMessages([errorMsg])
+      setTaskStarted(false)
+      setPendingContext(null)
     }
   }
 
@@ -468,6 +548,9 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
       abortControllerRef.current = null
     }
     setIsExecuting(false)
+    setTaskStarted(false)
+    setContextSent(false)
+    setPendingContext(null)
 
     // End AI session if active
     if (aiSessionId && aiSessionActive) {
@@ -1017,6 +1100,21 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
               )}
             </button>
           </form>
+          {pendingContext && taskStarted && (
+            <div className="mt-4 flex items-center justify-between text-xs bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900 rounded-lg px-3 py-2">
+              <span className="text-blue-700 dark:text-blue-200">
+                Initial context not delivered. Send it now?
+              </span>
+              <button
+                type="button"
+                onClick={handleSendPendingContext}
+                disabled={isExecuting || !aiSessionActive}
+                className="px-3 py-1 rounded-md bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Send Context
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
