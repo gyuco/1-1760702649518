@@ -20,21 +20,55 @@ async function runGitCommand(command: string, cwd: string): Promise<string> {
   }
 }
 
+async function isGitRepository(cwd: string): Promise<boolean> {
+  try {
+    const { stdout } = await exec('git rev-parse --is-inside-work-tree', { cwd })
+    return stdout.trim() === 'true'
+  } catch {
+    return false
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
     const { action, basePath, taskId } = body
+    const resolvedBasePath = basePath || process.cwd()
+
+    const ensureRepository = async () => {
+      const inRepo = await isGitRepository(resolvedBasePath)
+      if (!inRepo) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: `No Git repository found at ${resolvedBasePath}. Run "git init" before using worktrees.`,
+          },
+          { status: 400 }
+        )
+      }
+      return null
+    }
 
     switch (action) {
       case 'getBranch': {
+        const repoCheck = await ensureRepository()
+        if (repoCheck) {
+          return repoCheck
+        }
+
         // Get current branch name
-        const branch = await runGitCommand('git branch --show-current', basePath)
+        const branch = await runGitCommand('git branch --show-current', resolvedBasePath)
         return NextResponse.json({ success: true, branch })
       }
 
       case 'createWorktree': {
+        const repoCheck = await ensureRepository()
+        if (repoCheck) {
+          return repoCheck
+        }
+
         // Get current branch
-        const baseBranch = await runGitCommand('git branch --show-current', basePath)
+        const baseBranch = await runGitCommand('git branch --show-current', resolvedBasePath)
 
         // Generate worktree path and branch name
         const timestamp = Date.now()
@@ -44,7 +78,7 @@ export async function POST(request: NextRequest) {
         // Create worktree
         await runGitCommand(
           `git worktree add -b ${worktreeBranch} ${worktreePath} ${baseBranch}`,
-          basePath
+          resolvedBasePath
         )
 
         return NextResponse.json({
@@ -57,6 +91,12 @@ export async function POST(request: NextRequest) {
 
       case 'getWorktreeStatus': {
         const { worktreePath } = body
+        if (!worktreePath) {
+          return NextResponse.json(
+            { success: false, error: 'Missing worktreePath' },
+            { status: 400 }
+          )
+        }
 
         // Check if there are changes
         const status = await runGitCommand('git status --porcelain', worktreePath)
@@ -87,6 +127,10 @@ export async function POST(request: NextRequest) {
 
       case 'mergeWorktree': {
         const { worktreePath, worktreeBranch, baseBranch } = body
+        const repoCheck = await ensureRepository()
+        if (repoCheck) {
+          return repoCheck
+        }
 
         // First, commit any pending changes in worktree
         try {
@@ -104,12 +148,12 @@ export async function POST(request: NextRequest) {
 
         // Ensure we're on the correct base branch before merging
         if (baseBranch) {
-          await runGitCommand(`git checkout ${baseBranch}`, basePath)
+          await runGitCommand(`git checkout ${baseBranch}`, resolvedBasePath)
         }
 
         // Merge the worktree branch
         try {
-          await runGitCommand(`git merge ${worktreeBranch} --no-ff -m "Merge task: ${worktreeBranch}"`, basePath)
+          await runGitCommand(`git merge ${worktreeBranch} --no-ff -m "Merge task: ${worktreeBranch}"`, resolvedBasePath)
         } catch (error: any) {
           return NextResponse.json({
             success: false,
@@ -119,8 +163,8 @@ export async function POST(request: NextRequest) {
         }
 
         // Clean up worktree
-        await runGitCommand(`git worktree remove ${worktreePath} --force`, basePath)
-        await runGitCommand(`git branch -d ${worktreeBranch}`, basePath)
+        await runGitCommand(`git worktree remove ${worktreePath} --force`, resolvedBasePath)
+        await runGitCommand(`git branch -d ${worktreeBranch}`, resolvedBasePath)
 
         return NextResponse.json({
           success: true,
@@ -130,11 +174,15 @@ export async function POST(request: NextRequest) {
 
       case 'cleanupWorktree': {
         const { worktreePath, worktreeBranch } = body
+        const repoCheck = await ensureRepository()
+        if (repoCheck) {
+          return repoCheck
+        }
 
         // Remove worktree and branch
         try {
-          await runGitCommand(`git worktree remove ${worktreePath} --force`, basePath)
-          await runGitCommand(`git branch -D ${worktreeBranch}`, basePath)
+          await runGitCommand(`git worktree remove ${worktreePath} --force`, resolvedBasePath)
+          await runGitCommand(`git branch -D ${worktreeBranch}`, resolvedBasePath)
         } catch (error: any) {
           console.warn('Cleanup warning:', error.message)
         }

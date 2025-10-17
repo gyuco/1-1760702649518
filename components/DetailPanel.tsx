@@ -3,6 +3,11 @@
 import { useState, useRef, useEffect } from 'react'
 import { Card, Priority } from './KanbanBoard'
 import { DirectoryPicker } from './DirectoryPicker'
+import {
+  CLI_OPTIONS,
+  CLIType,
+  isAiCli,
+} from '@/lib/cli/strategies'
 
 interface DetailPanelProps {
   card: Card
@@ -15,18 +20,6 @@ interface Message {
   type: 'user' | 'system' | 'stdout' | 'stderr' | 'error'
   content: string
   timestamp: Date
-}
-
-type CLIType = 'gemini' | 'qwen' | 'command'
-
-interface CLIOption {
-  id: CLIType
-  name: string
-  command: string
-  description: string
-  defaultArgs?: string[]
-  tools?: string[]
-  guidance?: string[]
 }
 
 // Priority badge styles
@@ -47,73 +40,6 @@ const priorityStyles: Record<Priority, { bg: string; text: string; label: string
     label: 'Low',
   },
 }
-
-const CLI_OPTIONS: CLIOption[] = [
-  {
-    id: 'command',
-    name: 'Shell Command',
-    command: 'sh',
-    description: 'Execute shell commands',
-  },
-  {
-    id: 'gemini',
-    name: 'Gemini AI',
-    command: 'gemini',
-    description: 'Google Gemini AI assistant',
-    tools: [
-      'ReadFile',
-      'ReadManyFiles',
-      'ReadFolder',
-      'FindFiles',
-      'SearchText',
-      'Edit',
-      'WriteFile',
-      'Shell',
-      'WebFetch',
-      'GoogleSearch',
-      'Save Memory',
-    ],
-    guidance: [
-      'Inspect files with ReadFile or ReadManyFiles before editing.',
-      'Use SearchText to locate snippets and FindFiles/ReadFolder to explore structure.',
-      'Persist changes with WriteFile (full content) or Edit for partial updates. Do not call write_file or other snake_case tool names.',
-      'Run validations and scripts with Shell.',
-      'WebFetch or GoogleSearch are available for external references when needed.',
-      'Summaries or reusable context can go into Save Memory when appropriate.',
-    ],
-  },
-  {
-    id: 'qwen',
-    name: 'Qwen AI',
-    command: 'qwen',
-    description: 'Qwen AI assistant',
-    tools: [
-      'ReadFile',
-      'ReadManyFiles',
-      'ReadFolder',
-      'FindFiles',
-      'SearchText',
-      'Edit',
-      'WriteFile',
-      'Shell',
-      'Task',
-      'TodoWrite',
-      'SaveMemory',
-      'WebFetch',
-      'ExitPlanMode',
-    ],
-    guidance: [
-      'Use ReadFile/ReadManyFiles to inspect code and SearchText for targeted lookups.',
-      'Apply edits with Edit or WriteFile; avoid unregistered tool names like write_file.',
-      'Shell runs project commands and tests; capture output when it influences decisions.',
-      'Track follow-ups with TodoWrite and finish plan mode via ExitPlanMode when done.',
-      'Keep Task updates concise and maintain context with SaveMemory only if it helps later steps.',
-    ],
-  },
-]
-
-// Helper to check if CLI is AI-based
-const isAICLI = (cliType: CLIType) => cliType === 'gemini' || cliType === 'qwen'
 
 // Generate unique ID for messages
 let messageIdCounter = 0
@@ -188,8 +114,6 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     const sessionId = `${card.id}-${Date.now()}`
     setAiSessionId(sessionId)
 
-    const cliOption = CLI_OPTIONS.find((opt) => opt.id === selectedCLI)
-
     try {
       const response = await fetch('/api/session', {
         method: 'POST',
@@ -197,9 +121,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         body: JSON.stringify({
           action: 'start',
           sessionId,
-          command: cliOption?.command || 'gemini',
           mode: selectedCLI,
-          args: cliOption?.defaultArgs || [],
           cwd: worktreeInfo ? worktreeInfo.path : workingDirectory,
         }),
       })
@@ -279,7 +201,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     }
 
     try {
-      await fetch('/api/session', {
+      const response = await fetch('/api/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -288,6 +210,13 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
           args: [message],
         }),
       })
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null)
+        const errorText =
+          (payload && payload.error) || `Request failed with status ${response.status}`
+        throw new Error(errorText)
+      }
     } catch (error: any) {
       const errorMessage: Message = {
         id: generateMessageId(),
@@ -315,31 +244,28 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     setInputValue('')
     setIsExecuting(true)
 
-    // Get selected CLI option
-    const cliOption = CLI_OPTIONS.find((opt) => opt.id === selectedCLI)
-
-    // For AI CLIs with active session, send to session
-    if (isAICLI(selectedCLI) && aiSessionActive && aiSessionId) {
-      await sendToAISession(command)
+    // For AI CLIs ensure we have an active session
+    if (isAiCli(selectedCLI)) {
+      if (aiSessionActive && aiSessionId) {
+        await sendToAISession(command)
+      } else {
+        const errorMessage: Message = {
+          id: generateMessageId(),
+          type: 'error',
+          content: 'Start the AI session before sending commands.',
+          timestamp: new Date(),
+        }
+        setMessages((prev) => [...prev, errorMessage])
+      }
       setIsExecuting(false)
       return
     }
 
     // Prepare command based on CLI type
-    let cmd: string
-    let args: string[]
-
-    if (selectedCLI === 'command') {
-      // Direct shell command
-      const parts = command.trim().split(' ')
-      cmd = parts[0]
-      args = parts.slice(1)
-    } else {
-      // AI CLI (gemini or qwen)
-      cmd = cliOption?.command || 'echo'
-      const baseArgs = cliOption?.defaultArgs || []
-      args = [...baseArgs, command]
-    }
+    // Direct shell command path
+    const parts = command.trim().split(' ')
+    const cmd = parts[0]
+    const args = parts.slice(1)
 
     try {
       abortControllerRef.current = new AbortController()
@@ -472,7 +398,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
       setTaskStarted(true)
 
       // If AI CLI, start persistent session
-      if (isAICLI(selectedCLI)) {
+      if (isAiCli(selectedCLI)) {
         const aiMsg: Message = {
           id: generateMessageId(),
           type: 'system',
@@ -490,8 +416,8 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         // Send initial context
         const activeCLIOption = CLI_OPTIONS.find((opt) => opt.id === selectedCLI)
 
-        const toolSection = activeCLIOption?.tools?.length
-          ? `Available tools:\n- ${activeCLIOption.tools.join('\n- ')}`
+        const toolSection = activeCLIOption?.displayTools?.length
+          ? `Available tools:\n- ${activeCLIOption.displayTools.join('\n- ')}`
           : null
 
         const guidanceSection = activeCLIOption?.guidance?.length
@@ -880,7 +806,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
             <div className="flex items-center justify-center h-full">
               <div className="text-center">
                 <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-blue-100 dark:bg-blue-950 flex items-center justify-center">
-                  {isAICLI(selectedCLI) ? (
+                  {isAiCli(selectedCLI) ? (
                     <svg
                       className="w-8 h-8 text-blue-600 dark:text-blue-400"
                       fill="none"
@@ -911,12 +837,12 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
                   )}
                 </div>
                 <p className="text-gray-500 dark:text-gray-400 text-sm">
-                  {isAICLI(selectedCLI)
+                  {isAiCli(selectedCLI)
                     ? `${CLI_OPTIONS.find((opt) => opt.id === selectedCLI)?.name} is ready`
                     : "Type a command to get started"}
                 </p>
                 <p className="text-gray-400 dark:text-gray-500 text-xs mt-2">
-                  {isAICLI(selectedCLI) ? (
+                  {isAiCli(selectedCLI) ? (
                     <>The AI will automatically receive the task context</>
                   ) : (
                     <>
@@ -1022,7 +948,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
               placeholder={
                 !taskStarted
                   ? "Click 'Start Task' to begin..."
-                  : isAICLI(selectedCLI)
+                : isAiCli(selectedCLI)
                   ? "Ask a question or give instructions..."
                   : "Type a command (e.g. ls -la, echo hello)..."
               }

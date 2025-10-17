@@ -10,6 +10,19 @@ export async function POST(request: NextRequest) {
   // Use provided working directory or default to process.cwd()
   const workingDir = cwd || process.cwd()
 
+  if (mode === 'gemini' || mode === 'qwen') {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: 'Use /api/session for Gemini or Qwen interactions.',
+      }),
+      {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    )
+  }
+
   const stream = new ReadableStream({
     start(controller) {
       let proc: any
@@ -83,27 +96,11 @@ export async function POST(request: NextRequest) {
       }
 
       // Handle different modes
-      if (mode === 'gemini' || mode === 'qwen') {
-        // For AI CLIs, pass the entire message as input via stdin
-        const message = args.join(' ')
-
-        proc = spawn(command, [], {
-          shell: false,
-          cwd: workingDir,
-        })
-
-        // Write the message to stdin
-        if (proc.stdin) {
-          proc.stdin.write(message + '\n')
-          proc.stdin.end()
-        }
-      } else {
-        // For shell commands, use the original behavior
-        proc = spawn(command, args, {
-          shell: true,
-          cwd: workingDir,
-        })
-      }
+      // For shell commands, use the original behavior
+      proc = spawn(command, args, {
+        shell: true,
+        cwd: workingDir,
+      })
 
       // Send initial message
       emit({
