@@ -1,6 +1,4 @@
-'use client'
-
-import { KanbanBoard } from '@/components/KanbanBoard'
+import { KanbanBoardNoSsr } from '@/components/KanbanBoardNoSsr'
 
 export default function Home() {
   return (
@@ -18,7 +16,7 @@ export default function Home() {
 
         {/* Kanban Board */}
         <main>
-          <KanbanBoard />
+          <KanbanBoardNoSsr />
         </main>
       </div>
     </div>
