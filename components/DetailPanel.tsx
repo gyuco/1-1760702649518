@@ -25,6 +25,8 @@ interface CLIOption {
   command: string
   description: string
   defaultArgs?: string[]
+  tools?: string[]
+  guidance?: string[]
 }
 
 // Priority badge styles
@@ -58,12 +60,55 @@ const CLI_OPTIONS: CLIOption[] = [
     name: 'Gemini AI',
     command: 'gemini',
     description: 'Google Gemini AI assistant',
+    tools: [
+      'ReadFile',
+      'ReadManyFiles',
+      'ReadFolder',
+      'FindFiles',
+      'SearchText',
+      'Edit',
+      'WriteFile',
+      'Shell',
+      'WebFetch',
+      'GoogleSearch',
+      'Save Memory',
+    ],
+    guidance: [
+      'Inspect files with ReadFile or ReadManyFiles before editing.',
+      'Use SearchText to locate snippets and FindFiles/ReadFolder to explore structure.',
+      'Persist changes with WriteFile (full content) or Edit for partial updates. Do not call write_file or other snake_case tool names.',
+      'Run validations and scripts with Shell.',
+      'WebFetch or GoogleSearch are available for external references when needed.',
+      'Summaries or reusable context can go into Save Memory when appropriate.',
+    ],
   },
   {
     id: 'qwen',
     name: 'Qwen AI',
     command: 'qwen',
     description: 'Qwen AI assistant',
+    tools: [
+      'ReadFile',
+      'ReadManyFiles',
+      'ReadFolder',
+      'FindFiles',
+      'SearchText',
+      'Edit',
+      'WriteFile',
+      'Shell',
+      'Task',
+      'TodoWrite',
+      'SaveMemory',
+      'WebFetch',
+      'ExitPlanMode',
+    ],
+    guidance: [
+      'Use ReadFile/ReadManyFiles to inspect code and SearchText for targeted lookups.',
+      'Apply edits with Edit or WriteFile; avoid unregistered tool names like write_file.',
+      'Shell runs project commands and tests; capture output when it influences decisions.',
+      'Track follow-ups with TodoWrite and finish plan mode via ExitPlanMode when done.',
+      'Keep Task updates concise and maintain context with SaveMemory only if it helps later steps.',
+    ],
   },
 ]
 
@@ -443,7 +488,30 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         await new Promise(resolve => setTimeout(resolve, 1000))
 
         // Send initial context
-        const contextMessage = `Task: ${card.title}\n\nDescription: ${card.description}\n\nPriority: ${card.priority}\nStatus: ${card.columnId.replace('-', ' ')}\n\nWorking in: ${data.worktreePath}\n\nPlease help me with this task. What would you suggest?`
+        const activeCLIOption = CLI_OPTIONS.find((opt) => opt.id === selectedCLI)
+
+        const toolSection = activeCLIOption?.tools?.length
+          ? `Available tools:\n- ${activeCLIOption.tools.join('\n- ')}`
+          : null
+
+        const guidanceSection = activeCLIOption?.guidance?.length
+          ? `Usage guidelines:\n- ${activeCLIOption.guidance.join('\n- ')}`
+          : null
+
+        const contextParts: Array<string | null> = [
+          `Task: ${card.title}`,
+          `Description: ${card.description}`,
+          `Priority: ${card.priority}`,
+          `Status: ${card.columnId.replace('-', ' ')}`,
+          `Working in: ${data.worktreePath}`,
+          toolSection,
+          guidanceSection,
+          'Please propose a short plan before making changes, then execute it step by step. Confirm when the task is complete.',
+        ]
+
+        const contextMessage = contextParts
+          .filter((part): part is string => Boolean(part))
+          .join('\n\n')
 
         const contextMsg: Message = {
           id: generateMessageId(),
