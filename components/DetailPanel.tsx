@@ -70,8 +70,10 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
   const [aiSessionId, setAiSessionId] = useState<string | null>(null)
   const [aiSessionActive, setAiSessionActive] = useState(false)
   const [pendingContext, setPendingContext] = useState<string | null>(null)
+  const [pendingContextRetries, setPendingContextRetries] = useState(0)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
+  const sendToAISessionRef = useRef<(message: string, options?: any) => Promise<boolean>>()
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -80,9 +82,9 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
 
   // Send pending context when session becomes active
   useEffect(() => {
-    if (aiSessionActive && pendingContext && !contextSent) {
+    if (aiSessionActive && pendingContext && !contextSent && sendToAISessionRef.current) {
       const sendPendingContext = async () => {
-        const sent = await sendToAISession(pendingContext, { silent: true, force: true })
+        const sent = await sendToAISessionRef.current!(pendingContext, { silent: true, force: true })
         if (sent) {
           const contextMsg: Message = {
             id: generateMessageId(),
@@ -93,11 +95,17 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
           setMessages((prev) => [...prev, contextMsg])
           setContextSent(true)
           setPendingContext(null)
+          setPendingContextRetries(0) // Reset retries on success
+        } else if (pendingContextRetries < 5) { // Retry up to 5 times
+          // If sending failed and we haven't exceeded retries, try again after a delay
+          setTimeout(() => {
+            setPendingContextRetries(prev => prev + 1)
+          }, 1000 * (pendingContextRetries + 1)) // Increasing delay: 1s, 2s, 3s, etc.
         }
       }
       sendPendingContext()
     }
-  }, [aiSessionActive, pendingContext, contextSent])
+  }, [aiSessionActive, pendingContext, contextSent, pendingContextRetries])
 
   // Reset context when CLI changes
   useEffect(() => {
@@ -316,6 +324,11 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
       return false
     }
   }
+
+  // Update ref when sendToAISession changes
+  useEffect(() => {
+    sendToAISessionRef.current = sendToAISession
+  }, [sendToAISession])
 
   const buildContextMessage = (worktree: {
     path: string
@@ -564,29 +577,10 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
           return
         }
 
-        await new Promise((resolve) => setTimeout(resolve, 500))
-
-        const sent = await sendToAISession(contextMessage, {
-          silent: true,
-          sessionIdOverride: startedSessionId,
-          force: true,
-        })
-
-        if (sent) {
-          const contextMsg: Message = {
-            id: generateMessageId(),
-            type: 'system',
-            content: '📋 Context sent to AI',
-            timestamp: new Date(),
-          }
-          setMessages((prev) => [...prev, contextMsg])
-          setContextSent(true)
-          setPendingContext(null)
-        } else {
-          // Even if initial send fails, try to send the context as soon as the session is active
-          setPendingContext(contextMessage)
-          setContextSent(false)
-        }
+        // Don't try to send immediately, just set as pending
+        // The useEffect will handle sending when the session is ready
+        setPendingContext(contextMessage)
+        setContextSent(false)
       }
     } catch (error: any) {
       const errorMsg: Message = {
@@ -1091,9 +1085,9 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
                     }
                   `}
                 >
-                  <pre className="text-sm font-mono whitespace-pre-wrap">
+                  <div className="text-sm font-mono whitespace-pre-line">
                     {message.content}
-                  </pre>
+                  </div>
                   <p
                     className={`
                       text-xs mt-1

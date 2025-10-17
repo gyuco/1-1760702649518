@@ -43,7 +43,11 @@ function formatNotification(notification: AcpNotification): string | null {
     switch (kind) {
       case 'agent_message_chunk': {
         const text = update.content?.text
-        return typeof text === 'string' && text.trim().length > 0 ? text : null
+        if (typeof text === 'string' && text.trim().length > 0) {
+          // Remove all single newlines, keep only double newlines for paragraph breaks
+          return text.replace(/\n(?!\n)/g, ' ').replace(/\n\n+/g, '\n\n')
+        }
+        return null
       }
       case 'plan': {
         const entries: Array<{ content?: string; status?: string }> = Array.isArray(

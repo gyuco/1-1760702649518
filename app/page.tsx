@@ -10,7 +10,7 @@ export default function Home() {
             demo board 02
           </h1>
           <p className="text-gray-600 dark:text-gray-400 text-sm sm:text-base">
-            Drag and drop cards between columns to manage your workflow
+            My Kanban Flow
           </p>
         </header>
 
