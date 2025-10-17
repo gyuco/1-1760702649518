@@ -1,4 +1,4 @@
-export type CLIType = 'command' | 'gemini' | 'qwen'
+export type CLIType = 'command' | 'gemini' | 'qwen' | 'amp' | 'claude' | 'codex'
 
 export interface CliStrategy {
   id: CLIType
@@ -142,12 +142,115 @@ export const CLI_STRATEGIES: Record<CLIType, CliStrategy> = {
       'All tool invocations operate on absolute paths within the trusted workspace.',
     ],
   },
+  amp: {
+    id: 'amp',
+    name: 'AMP AI',
+    description: 'Sourcegraph AMP CLI with ACP support',
+    baseCommand: ['npx', '-y', '@sourcegraph/amp@0.0.1759507289-g3e67fa'],
+    staticArgs: ['--execute', '--stream-json'],
+    allowedTools: [...QWEN_ALLOWED_TOOLS], // Using similar tools as Qwen
+    env: {
+      NODE_NO_WARNINGS: '1',
+    },
+    displayTools: [
+      'read_file',
+      'read_many_files',
+      'search_file_content',
+      'list_directory',
+      'glob',
+      'run_shell_command',
+      'edit',
+      'write_file',
+      'web_fetch',
+      'web_search',
+      'save_memory',
+      'todo_write',
+      'task',
+      'exit_plan_mode',
+    ],
+    guidance: [
+      'Use read_file and search_file_content to gather context before making changes.',
+      'Prefer edit for precise modifications; use write_file for complete file overwrites.',
+      'Leverage run_shell_command to execute project commands and validate changes.',
+      'All paths are relative to the workspace root unless specified as absolute.',
+      'Use task for complex multi-step operations and todo_write to track progress.',
+    ],
+  },
+  claude: {
+    id: 'claude',
+    name: 'Claude AI',
+    description: 'Anthropic Claude Code CLI with ACP support',
+    baseCommand: ['npx', '-y', '@anthropic-ai/claude-code@2.0.17'],
+    staticArgs: ['-p', '--verbose', '--output-format=stream-json', '--include-partial-messages'],
+    allowedTools: [...QWEN_ALLOWED_TOOLS], // Using similar tools as Qwen
+    env: {
+      NODE_NO_WARNINGS: '1',
+    },
+    displayTools: [
+      'read_file',
+      'read_many_files',
+      'search_file_content',
+      'list_directory',
+      'glob',
+      'run_shell_command',
+      'edit',
+      'write_file',
+      'web_fetch',
+      'web_search',
+      'save_memory',
+      'todo_write',
+      'task',
+      'exit_plan_mode',
+    ],
+    guidance: [
+      'Start with read_file and search_file_content to understand the codebase.',
+      'Use edit for targeted changes and write_file for complete rewrites.',
+      'Run shell commands to test and validate your changes interactively.',
+      'Use web_fetch for external research and documentation lookup.',
+      'Track your task progress with todo_write and exit_plan_mode when complete.',
+    ],
+  },
+  codex: {
+    id: 'codex',
+    name: 'Codex AI',
+    description: 'OpenAI Codex CLI with ACP support',
+    baseCommand: ['npx', '-y', '@openai/codex@0.46.0', 'app-server'],
+    allowedTools: [...QWEN_ALLOWED_TOOLS], // Using similar tools as Qwen
+    env: {
+      NODE_NO_WARNINGS: '1',
+      NO_COLOR: '1',
+      RUST_LOG: 'error',
+    },
+    displayTools: [
+      'read_file',
+      'read_many_files',
+      'search_file_content',
+      'list_directory',
+      'glob',
+      'run_shell_command',
+      'edit',
+      'write_file',
+      'web_fetch',
+      'web_search',
+      'save_memory',
+      'todo_write',
+      'task',
+      'exit_plan_mode',
+    ],
+    guidance: [
+      'Use read_file to examine existing code before making modifications.',
+      'Use search_file_content to find related implementations across the codebase.',
+      'Prefer edit for precise changes, and write_file for creating new files.',
+      'Execute run_shell_command to test your changes and run project scripts.',
+      'Use todo_write to maintain progress tracking and exit_plan_mode to complete tasks.',
+    ],
+  },
 }
 
 export const CLI_OPTIONS = Object.values(CLI_STRATEGIES)
 
 export const isAiCli = (mode: string): mode is Exclude<CLIType, 'command'> =>
-  mode === 'gemini' || mode === 'qwen'
+  mode === 'gemini' || mode === 'qwen' || mode === 'amp' || mode === 'claude' || mode === 'codex'
 
 export const getCliStrategy = (mode: CLIType): CliStrategy => CLI_STRATEGIES[mode]
 
@@ -172,9 +275,8 @@ export function buildCliInvocation(
     }
   }
 
-  if (context.cwd) {
-    args.push('--include-directories', context.cwd)
-  }
+  // Note: Claude Code CLI operates in the current working directory by default
+  // The --include-directories option is not supported and has been removed
 
   return {
     command,

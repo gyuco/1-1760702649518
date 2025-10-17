@@ -10,11 +10,11 @@ export async function POST(request: NextRequest) {
   // Use provided working directory or default to process.cwd()
   const workingDir = cwd || process.cwd()
 
-  if (mode === 'gemini' || mode === 'qwen') {
+  if (mode === 'gemini' || mode === 'qwen' || mode === 'amp' || mode === 'claude' || mode === 'codex') {
     return new Response(
       JSON.stringify({
         success: false,
-        error: 'Use /api/session for Gemini or Qwen interactions.',
+        error: 'Use /api/session for AI assistant interactions.',
       }),
       {
         status: 400,

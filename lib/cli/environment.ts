@@ -41,6 +41,21 @@ async function ensureSettings(strategy: CliStrategy, workspaceDir: string) {
       await ensureTrustedFolder(qwenDir, workspaceDir)
       break
     }
+    case 'amp': {
+      const ampDir = path.join(home, '.config', 'amp')
+      await ensureTrustedFolder(ampDir, workspaceDir)
+      break
+    }
+    case 'claude': {
+      const claudeDir = path.join(home, '.claude')
+      await ensureTrustedFolder(claudeDir, workspaceDir)
+      break
+    }
+    case 'codex': {
+      const codexDir = path.join(home, '.codex')
+      await ensureTrustedFolder(codexDir, workspaceDir)
+      break
+    }
     default:
       break
   }

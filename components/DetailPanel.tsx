@@ -89,9 +89,11 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
   // Send pending context when session becomes active
   useEffect(() => {
     if (aiSessionActive && pendingContext && !contextSent && sendToAISessionRef.current) {
+      console.log('[DetailPanel] Attempting to send pending context...')
       const sendPendingContext = async () => {
         const sent = await sendToAISessionRef.current!(pendingContext, { silent: true, force: true })
         if (sent) {
+          console.log('[DetailPanel] Context sent successfully')
           const contextMsg: Message = {
             id: generateMessageId(),
             type: 'system',
@@ -102,11 +104,14 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
           setContextSent(true)
           setPendingContext(null)
           setPendingContextRetries(0) // Reset retries on success
-        } else if (pendingContextRetries < 5) { // Retry up to 5 times
-          // If sending failed and we haven't exceeded retries, try again after a delay
-          setTimeout(() => {
-            setPendingContextRetries(prev => prev + 1)
-          }, 1000 * (pendingContextRetries + 1)) // Increasing delay: 1s, 2s, 3s, etc.
+        } else {
+          console.log('[DetailPanel] Failed to send context, retries:', pendingContextRetries)
+          if (pendingContextRetries < 5) { // Retry up to 5 times
+            // If sending failed and we haven't exceeded retries, try again after a delay
+            setTimeout(() => {
+              setPendingContextRetries(prev => prev + 1)
+            }, 1000 * (pendingContextRetries + 1)) // Increasing delay: 1s, 2s, 3s, etc.
+          }
         }
       }
       sendPendingContext()
@@ -167,8 +172,6 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         throw new Error(`Failed to start session: ${response.status}`)
       }
 
-      setAiSessionActive(true)
-
       const reader = response.body?.getReader()
       const decoder = new TextDecoder()
 
@@ -189,6 +192,21 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
             for (const line of lines) {
               try {
                 const data = JSON.parse(line)
+
+                // Check if session is ready by looking for "Session ready" message
+                if (data.type === 'stdout' && typeof data.data === 'string' && data.data.includes('Session ready')) {
+                  console.log('[DetailPanel] Session is ready, activating AI session')
+                  setAiSessionActive(true)
+                  // Display the session ready message
+                  const readyMsg: Message = {
+                    id: generateMessageId(),
+                    type: 'system',
+                    content: data.data,
+                    timestamp: new Date(),
+                  }
+                  setMessages((prev) => [...prev, readyMsg])
+                  continue // Skip further processing for this message
+                }
 
                 if (data.type === 'stdout') {
                   try {
@@ -285,7 +303,10 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     const targetSessionId = options.sessionIdOverride ?? aiSessionId
     const isActive = options.force ? true : aiSessionActive
 
+    console.log('[sendToAISession] Attempting to send message. SessionId:', targetSessionId, 'isActive:', isActive, 'force:', options.force)
+
     if (!targetSessionId || !isActive) {
+      console.log('[sendToAISession] Cannot send - session not ready')
       if (!options.silent) {
         const errorMessage: Message = {
           id: generateMessageId(),
@@ -300,6 +321,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     }
 
     try {
+      console.log('[sendToAISession] Sending request to /api/session')
       const response = await fetch('/api/session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -314,10 +336,13 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         const payload = await response.json().catch(() => null)
         const errorText =
           (payload && payload.error) || `Request failed with status ${response.status}`
+        console.error('[sendToAISession] Request failed:', errorText)
         throw new Error(errorText)
       }
+      console.log('[sendToAISession] Message sent successfully')
       return true
     } catch (error: any) {
+      console.error('[sendToAISession] Error:', error)
       if (!options.silent) {
         const errorMessage: Message = {
           id: generateMessageId(),
