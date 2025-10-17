@@ -77,6 +77,8 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
   const [showDirectoryPicker, setShowDirectoryPicker] = useState(false)
   const [aiSessionId, setAiSessionId] = useState<string | null>(null)
   const [aiSessionActive, setAiSessionActive] = useState(false)
+  const [worktreeDiff, setWorktreeDiff] = useState<string>('')
+  const [worktreeStatus, setWorktreeStatus] = useState<string>('')
   const [pendingContext, setPendingContext] = useState<string | null>(null)
   const [pendingContextRetries, setPendingContextRetries] = useState(0)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -225,7 +227,10 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
                       setTaskStarted(false)
                       setAiSessionActive(false)
                       setPendingContext(null)
-                      setShowMergeDialog(true)
+                      // Auto-fetch worktree status
+                      if (worktreeInfo) {
+                        fetchWorktreeStatus()
+                      }
                       continue
                     }
                   } catch {
@@ -450,12 +455,14 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
       let requestBody: any
 
       if (usesStdinStdout(selectedCLI)) {
+        const targetCwd = worktreeInfo ? worktreeInfo.path : workingDirectory
+        console.log('Executing Claude in directory:', targetCwd)
         // For Claude, pass the full command as args (will be used as prompt)
         requestBody = {
           command: '', // Not used for Claude
           args: [command], // Full prompt
           mode: selectedCLI,
-          cwd: worktreeInfo ? worktreeInfo.path : workingDirectory
+          cwd: targetCwd
         }
       } else {
         // For shell commands, parse command and args
@@ -594,7 +601,11 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
                     setMessages((prev) => [...prev, completionMsg])
                     setIsExecuting(false)
                     setTaskStarted(false)
-                    setShowMergeDialog(true)
+                    // Auto-fetch worktree status when task completes
+                    if (worktreeInfo) {
+                      console.log('Fetching worktree status for:', worktreeInfo.path)
+                      fetchWorktreeStatus()
+                    }
                   } else {
                     // Unknown event type - log for debugging but don't show raw JSON
                     console.log('Unknown Claude stream event type:', event.type, event)
@@ -631,7 +642,10 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
                   setMessages((prev) => [...prev, message])
                   setIsExecuting(false)
                   setTaskStarted(false)
-                  setShowMergeDialog(true)
+                  // Auto-fetch worktree status when task completes
+                  if (worktreeInfo) {
+                    fetchWorktreeStatus()
+                  }
                   continue
                 } else {
                   // Unknown message type - log for debugging but don't show raw JSON
@@ -836,9 +850,41 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     }
     setMessages((prev) => [...prev, stopMsg])
 
-    // Show merge dialog if worktree exists
+    // Auto-fetch worktree status when stopping
     if (worktreeInfo) {
-      setShowMergeDialog(true)
+      fetchWorktreeStatus()
+    }
+  }
+
+  const fetchWorktreeStatus = async () => {
+    if (!worktreeInfo) {
+      console.warn('No worktreeInfo available')
+      return
+    }
+
+    console.log('Fetching status for worktree:', worktreeInfo.path)
+    try {
+      const response = await fetch('/api/git', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'getWorktreeStatus',
+          worktreePath: worktreeInfo.path,
+        }),
+      })
+
+      const data = await response.json()
+      console.log('Worktree status response:', data)
+      if (data.success) {
+        setWorktreeDiff(data.diff || '')
+        setWorktreeStatus(data.status || '')
+        console.log('Diff:', data.diff?.substring(0, 200))
+        console.log('Status:', data.status)
+      } else {
+        console.error('Failed to get worktree status:', data.error)
+      }
+    } catch (error) {
+      console.error('Failed to fetch worktree status:', error)
     }
   }
 
@@ -1069,48 +1115,17 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
             </div>
 
             {/* Action Buttons */}
-            <div className="flex gap-2">
-              {worktreeInfo ? (
-                <>
-                  <button
-                    onClick={handleStopTask}
-                    className="
-                      flex-1 px-4 py-2 bg-red-600 hover:bg-red-700
-                      text-white rounded-lg text-sm font-medium
-                      transition-colors duration-200
-                      flex items-center justify-center gap-2
-                    "
-                  >
-                    <svg
-                      className="w-4 h-4"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                      />
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"
-                      />
-                    </svg>
-                    Stop Task
-                  </button>
-                  {isAiCli(selectedCLI) && (
+            <div className="space-y-2">
+              {/* Start/Stop Task Row */}
+              <div className="flex gap-2">
+                {worktreeInfo ? (
+                  <>
                     <button
-                      onClick={handleStartTask}
-                      disabled={isExecuting || aiSessionActive}
+                      onClick={handleStopTask}
                       className="
-                        flex-1 px-4 py-2 bg-green-600 hover:bg-green-700
+                        flex-1 px-4 py-2 bg-red-600 hover:bg-red-700
                         text-white rounded-lg text-sm font-medium
                         transition-colors duration-200
-                        disabled:opacity-50 disabled:cursor-not-allowed
                         flex items-center justify-center gap-2
                       "
                     >
@@ -1124,52 +1139,147 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
                           strokeLinecap="round"
                           strokeLinejoin="round"
                           strokeWidth={2}
-                          d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"
+                          d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
                         />
                         <path
                           strokeLinecap="round"
                           strokeLinejoin="round"
                           strokeWidth={2}
-                          d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                          d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"
                         />
                       </svg>
-                      {aiSessionActive ? 'Session Active' : 'Resume Session'}
+                      Stop Task
                     </button>
-                  )}
-                </>
-              ) : (
-                <button
-                  onClick={handleStartTask}
-                  disabled={isExecuting}
-                  className="
-                    flex-1 px-4 py-2 bg-green-600 hover:bg-green-700
-                    text-white rounded-lg text-sm font-medium
-                    transition-colors duration-200
-                    disabled:opacity-50 disabled:cursor-not-allowed
-                    flex items-center justify-center gap-2
-                  "
-                >
-                  <svg
-                    className="w-4 h-4"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
+                    {isAiCli(selectedCLI) && (
+                      <button
+                        onClick={handleStartTask}
+                        disabled={isExecuting || aiSessionActive}
+                        className="
+                          flex-1 px-4 py-2 bg-green-600 hover:bg-green-700
+                          text-white rounded-lg text-sm font-medium
+                          transition-colors duration-200
+                          disabled:opacity-50 disabled:cursor-not-allowed
+                          flex items-center justify-center gap-2
+                        "
+                      >
+                        <svg
+                          className="w-4 h-4"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"
+                          />
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                          />
+                        </svg>
+                        {aiSessionActive ? 'Session Active' : 'Resume Session'}
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <button
+                    onClick={handleStartTask}
+                    disabled={isExecuting}
+                    className="
+                      flex-1 px-4 py-2 bg-green-600 hover:bg-green-700
+                      text-white rounded-lg text-sm font-medium
+                      transition-colors duration-200
+                      disabled:opacity-50 disabled:cursor-not-allowed
+                      flex items-center justify-center gap-2
+                    "
                   >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"
-                    />
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-                    />
-                  </svg>
-                  Start Task
-                </button>
+                    <svg
+                      className="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"
+                      />
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                      />
+                    </svg>
+                    Start Task
+                  </button>
+                )}
+              </div>
+
+              {/* Merge/Discard Row - Always visible when worktree exists */}
+              {worktreeInfo && (
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      fetchWorktreeStatus()
+                      setShowMergeDialog(true)
+                    }}
+                    disabled={isExecuting}
+                    className="
+                      flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700
+                      text-white rounded-lg text-sm font-medium
+                      transition-colors duration-200
+                      flex items-center justify-center gap-2
+                      disabled:opacity-50 disabled:cursor-not-allowed
+                    "
+                  >
+                    <svg
+                      className="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M5 13l4 4L19 7"
+                      />
+                    </svg>
+                    Review & Merge
+                  </button>
+                  <button
+                    onClick={handleCleanupWorktree}
+                    disabled={isExecuting}
+                    className="
+                      flex-1 px-4 py-2 bg-gray-600 hover:bg-gray-700
+                      text-white rounded-lg text-sm font-medium
+                      transition-colors duration-200
+                      flex items-center justify-center gap-2
+                      disabled:opacity-50 disabled:cursor-not-allowed
+                    "
+                  >
+                    <svg
+                      className="w-4 h-4"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"
+                      />
+                    </svg>
+                    Discard
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -1458,6 +1568,38 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
                     <span className="text-gray-900 dark:text-gray-100 truncate">{worktreeInfo.path}</span>
                   </div>
                 </div>
+                
+                {/* Worktree Status */}
+                {worktreeStatus && (
+                  <div className="mt-3 bg-blue-50 dark:bg-blue-950 rounded-lg p-3">
+                    <p className="text-xs font-medium text-blue-800 dark:text-blue-300 mb-1">
+                      📊 Changed Files:
+                    </p>
+                    <pre className="text-xs text-blue-700 dark:text-blue-400 whitespace-pre-wrap">
+                      {worktreeStatus}
+                    </pre>
+                  </div>
+                )}
+                
+                {/* Diff Preview */}
+                {worktreeDiff && (
+                  <div className="mt-3 bg-gray-50 dark:bg-slate-900 rounded-lg p-3 max-h-64 overflow-y-auto">
+                    <p className="text-xs font-medium text-gray-700 dark:text-gray-300 mb-2">
+                      📝 Changes Preview:
+                    </p>
+                    <pre className="text-xs text-gray-800 dark:text-gray-200 whitespace-pre-wrap font-mono">
+                      {worktreeDiff}
+                    </pre>
+                  </div>
+                )}
+                
+                {!worktreeStatus && !worktreeDiff && (
+                  <div className="mt-3 bg-yellow-50 dark:bg-yellow-950 rounded-lg p-3">
+                    <p className="text-xs text-yellow-800 dark:text-yellow-300">
+                      ⚠️ No changes detected in worktree
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
 

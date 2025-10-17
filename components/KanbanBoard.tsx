@@ -44,7 +44,7 @@ const initialCards: Card[] = [
   {
     id: '1',
     title: 'Change board title',
-    description: 'Change the title from board 05 to demo board 06',
+    description: 'Change the title from demo board 06 to demo board 07',
     priority: 'high',
     columnId: 'done',
   },
