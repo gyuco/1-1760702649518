@@ -55,7 +55,13 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
   const [isExecuting, setIsExecuting] = useState(false)
   const [selectedCLI, setSelectedCLI] = useState<CLIType>('command')
   const [contextSent, setContextSent] = useState(false)
-  const [workingDirectory, setWorkingDirectory] = useState(process.cwd ? process.cwd() : '/tmp')
+  const [workingDirectory, setWorkingDirectory] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('workingDirectory')
+      if (saved) return saved
+    }
+    return process.cwd ? process.cwd() : '/tmp'
+  })
   const [baseDirectory, setBaseDirectory] = useState(process.cwd ? process.cwd() : '/tmp') // Original directory
   const [taskStarted, setTaskStarted] = useState(false)
   const [currentBranch, setCurrentBranch] = useState<string>('')
@@ -1317,6 +1323,9 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         currentPath={workingDirectory}
         onSelect={(selectedPath) => {
           setWorkingDirectory(selectedPath)
+          if (typeof window !== 'undefined') {
+            localStorage.setItem('workingDirectory', selectedPath)
+          }
           fetchCurrentBranch()
           setShowDirectoryPicker(false)
         }}
