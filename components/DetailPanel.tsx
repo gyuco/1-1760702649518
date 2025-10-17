@@ -24,6 +24,7 @@ interface CLIOption {
   name: string
   command: string
   description: string
+  defaultArgs?: string[]
 }
 
 // Priority badge styles
@@ -153,6 +154,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
           sessionId,
           command: cliOption?.command || 'gemini',
           mode: selectedCLI,
+          args: cliOption?.defaultArgs || [],
           cwd: worktreeInfo ? worktreeInfo.path : workingDirectory,
         }),
       })
@@ -290,7 +292,8 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     } else {
       // AI CLI (gemini or qwen)
       cmd = cliOption?.command || 'echo'
-      args = [command]
+      const baseArgs = cliOption?.defaultArgs || []
+      args = [...baseArgs, command]
     }
 
     try {

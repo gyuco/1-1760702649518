@@ -28,10 +28,9 @@ export async function POST(request: NextRequest) {
         start(controller) {
           let proc: ChildProcess
 
-          // For AI CLIs, start interactive mode
+          // For AI CLIs, start interactive mode (most CLIs drop into REPL when no args)
           if (mode === 'gemini' || mode === 'qwen') {
-            // Use interactive flag if available
-            const interactiveArgs = mode === 'gemini' ? ['--interactive'] : []
+            const interactiveArgs = Array.isArray(args) ? args : []
 
             proc = spawn(command, interactiveArgs, {
               shell: false,
