@@ -72,11 +72,33 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
   const [pendingContext, setPendingContext] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
+  const sendToAISessionRef = useRef(sendToAISession)
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // Send pending context when session becomes active
+  useEffect(() => {
+    if (aiSessionActive && pendingContext && !contextSent) {
+      const sendPendingContext = async () => {
+        const sent = await sendToAISessionRef.current(pendingContext)
+        if (sent) {
+          const contextMsg: Message = {
+            id: generateMessageId(),
+            type: 'system',
+            content: '📋 Context sent to AI',
+            timestamp: new Date(),
+          }
+          setMessages((prev) => [...prev, contextMsg])
+          setContextSent(true)
+          setPendingContext(null)
+        }
+      }
+      sendPendingContext()
+    }
+  }, [aiSessionActive, pendingContext, contextSent])
 
   // Reset context when CLI changes
   useEffect(() => {
@@ -562,14 +584,8 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
           setContextSent(true)
           setPendingContext(null)
         } else {
-          const warningMsg: Message = {
-            id: generateMessageId(),
-            type: 'error',
-            content:
-              'Failed to send the initial context automatically. Use the “Send Context” button below once the session is ready.',
-            timestamp: new Date(),
-          }
-          setMessages((prev) => [...prev, warningMsg])
+          // Even if initial send fails, try to send the context as soon as the session is active
+          setPendingContext(contextMessage)
           setContextSent(false)
         }
       }
