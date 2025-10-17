@@ -13,6 +13,35 @@ export async function POST(request: NextRequest) {
   const stream = new ReadableStream({
     start(controller) {
       let proc: any
+      let isClosed = false
+
+      const emit = (payload: Record<string, unknown>) => {
+        if (isClosed) {
+          return
+        }
+
+        try {
+          controller.enqueue(encoder.encode(JSON.stringify(payload) + '\n'))
+        } catch (error) {
+          isClosed = true
+          console.error('Failed to emit stream payload', error)
+        }
+      }
+
+      const finalize = (payload?: Record<string, unknown>) => {
+        if (!isClosed && payload) {
+          emit(payload)
+        }
+
+        if (!isClosed) {
+          isClosed = true
+          try {
+            controller.close()
+          } catch (error) {
+            console.error('Failed to close stream controller', error)
+          }
+        }
+      }
 
       // Handle different modes
       if (mode === 'gemini' || mode === 'qwen') {
@@ -38,64 +67,42 @@ export async function POST(request: NextRequest) {
       }
 
       // Send initial message
-      controller.enqueue(
-        encoder.encode(
-          JSON.stringify({
-            type: 'start',
-            data: `Executing: ${command} ${args.join(' ')}\n`,
-          }) + '\n'
-        )
-      )
+      emit({
+        type: 'start',
+        data: `Executing: ${command} ${args.join(' ')}\n`,
+      })
 
       // Handle stdout
-      proc.stdout.on('data', (data) => {
-        controller.enqueue(
-          encoder.encode(
-            JSON.stringify({
-              type: 'stdout',
-              data: data.toString(),
-            }) + '\n'
-          )
-        )
+      proc.stdout?.on('data', (data: Buffer) => {
+        emit({
+          type: 'stdout',
+          data: data.toString(),
+        })
       })
 
       // Handle stderr
-      proc.stderr.on('data', (data) => {
-        controller.enqueue(
-          encoder.encode(
-            JSON.stringify({
-              type: 'stderr',
-              data: data.toString(),
-            }) + '\n'
-          )
-        )
+      proc.stderr?.on('data', (data: Buffer) => {
+        emit({
+          type: 'stderr',
+          data: data.toString(),
+        })
       })
 
       // Handle process completion
       proc.on('close', (code) => {
-        controller.enqueue(
-          encoder.encode(
-            JSON.stringify({
-              type: 'close',
-              data: `Process exited with code ${code}\n`,
-              code,
-            }) + '\n'
-          )
-        )
-        controller.close()
+        finalize({
+          type: 'close',
+          data: `Process exited with code ${code}\n`,
+          code,
+        })
       })
 
       // Handle errors
       proc.on('error', (error) => {
-        controller.enqueue(
-          encoder.encode(
-            JSON.stringify({
-              type: 'error',
-              data: `Error: ${error.message}\n`,
-            }) + '\n'
-          )
-        )
-        controller.close()
+        finalize({
+          type: 'error',
+          data: `Error: ${error.message}\n`,
+        })
       })
     },
   })
