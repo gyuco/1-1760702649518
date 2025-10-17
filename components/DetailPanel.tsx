@@ -504,12 +504,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
               try {
                 const claudeMessage = JSON.parse(data.data)
 
-                // Skip messages with session_id/uuid (internal metadata, not for display)
-                if (claudeMessage.session_id || claudeMessage.uuid || claudeMessage.parent_tool_use_id !== undefined) {
-                  continue
-                }
-
-                // Handle Claude stream events
+                // Handle Claude stream events (only extract user-facing content)
                 if (claudeMessage.type === 'stream_event' && claudeMessage.event) {
                   const event = claudeMessage.event
                   const index = event.index
@@ -643,8 +638,18 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
                   console.log('Unknown Claude message type:', claudeMessage.type, claudeMessage)
                 }
               } catch (parseError) {
-                // If parsing fails, it might be a regular output line, fall through
-                console.log('Failed to parse Claude message, treating as regular output:', parseError)
+                // If parsing fails for Claude, treat as non-JSON output (fallthrough)
+                console.log('Failed to parse Claude message:', parseError)
+              }
+            }
+
+            // For Claude stdout: only skip if it's a JSON message (starts with '{' or is already handled)
+            // Allow plain text messages through
+            if (usesStdinStdout(selectedCLI) && data.type === 'stdout' && data.data) {
+              const trimmedData = data.data.trim()
+              // Skip raw JSON objects but allow plain text system messages
+              if (trimmedData.startsWith('{') && trimmedData.includes('"type"')) {
+                continue
               }
             }
 
