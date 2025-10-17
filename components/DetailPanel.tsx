@@ -84,15 +84,19 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
   const [selectedCLI, setSelectedCLI] = useState<CLIType>('command')
   const [contextSent, setContextSent] = useState(false)
   const [workingDirectory, setWorkingDirectory] = useState(process.cwd ? process.cwd() : '/tmp')
+  const [baseDirectory, setBaseDirectory] = useState(process.cwd ? process.cwd() : '/tmp') // Original directory
   const [taskStarted, setTaskStarted] = useState(false)
   const [currentBranch, setCurrentBranch] = useState<string>('')
   const [worktreeInfo, setWorktreeInfo] = useState<{
     path: string
     branch: string
     baseBranch: string
+    basePath: string
   } | null>(null)
   const [showMergeDialog, setShowMergeDialog] = useState(false)
   const [showDirectoryPicker, setShowDirectoryPicker] = useState(false)
+  const [aiSessionId, setAiSessionId] = useState<string | null>(null)
+  const [aiSessionActive, setAiSessionActive] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
@@ -134,6 +138,120 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     }
   }
 
+  const startAISession = async () => {
+    const sessionId = `${card.id}-${Date.now()}`
+    setAiSessionId(sessionId)
+
+    const cliOption = CLI_OPTIONS.find((opt) => opt.id === selectedCLI)
+
+    try {
+      const response = await fetch('/api/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'start',
+          sessionId,
+          command: cliOption?.command || 'gemini',
+          mode: selectedCLI,
+          cwd: worktreeInfo ? worktreeInfo.path : workingDirectory,
+        }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`Failed to start session: ${response.status}`)
+      }
+
+      setAiSessionActive(true)
+
+      const reader = response.body?.getReader()
+      const decoder = new TextDecoder()
+
+      if (!reader) {
+        throw new Error('No reader available')
+      }
+
+      // Read session output in background
+      const readLoop = async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+
+            const chunk = decoder.decode(value)
+            const lines = chunk.split('\n').filter((line) => line.trim())
+
+            for (const line of lines) {
+              try {
+                const data = JSON.parse(line)
+
+                // Filter out unwanted system messages
+                const shouldSkip =
+                  data.type === 'start' ||
+                  (data.type === 'close' && data.data.includes('code 0')) ||
+                  data.data.includes('Process exited with code 0') ||
+                  data.data.includes('Executing:')
+
+                if (!shouldSkip && data.data.trim()) {
+                  const message: Message = {
+                    id: generateMessageId(),
+                    type: data.type === 'stdout' ? 'stdout' : data.type === 'stderr' ? 'stderr' : 'system',
+                    content: data.data,
+                    timestamp: new Date(),
+                  }
+                  setMessages((prev) => [...prev, message])
+                }
+              } catch (e) {
+                console.error('Failed to parse message:', e)
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Session read error:', error)
+        } finally {
+          setAiSessionActive(false)
+          setAiSessionId(null)
+        }
+      }
+
+      readLoop()
+    } catch (error: any) {
+      const errorMessage: Message = {
+        id: generateMessageId(),
+        type: 'error',
+        content: error.message || 'Failed to start AI session',
+        timestamp: new Date(),
+      }
+      setMessages((prev) => [...prev, errorMessage])
+      setAiSessionActive(false)
+    }
+  }
+
+  const sendToAISession = async (message: string) => {
+    if (!aiSessionId || !aiSessionActive) {
+      return
+    }
+
+    try {
+      await fetch('/api/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'send',
+          sessionId: aiSessionId,
+          args: [message],
+        }),
+      })
+    } catch (error: any) {
+      const errorMessage: Message = {
+        id: generateMessageId(),
+        type: 'error',
+        content: error.message || 'Failed to send message',
+        timestamp: new Date(),
+      }
+      setMessages((prev) => [...prev, errorMessage])
+    }
+  }
+
   const executeCommand = async (command: string, skipUserMessage = false) => {
     if (!command.trim() || isExecuting) return
 
@@ -152,6 +270,13 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
 
     // Get selected CLI option
     const cliOption = CLI_OPTIONS.find((opt) => opt.id === selectedCLI)
+
+    // For AI CLIs with active session, send to session
+    if (isAICLI(selectedCLI) && aiSessionActive && aiSessionId) {
+      await sendToAISession(command)
+      setIsExecuting(false)
+      return
+    }
 
     // Prepare command based on CLI type
     let cmd: string
@@ -178,7 +303,8 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
           command: cmd,
           args,
           mode: selectedCLI,
-          cwd: workingDirectory
+          // Use worktree path if active, otherwise use working directory
+          cwd: worktreeInfo ? worktreeInfo.path : workingDirectory
         }),
         signal: abortControllerRef.current.signal,
       })
@@ -204,13 +330,23 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         for (const line of lines) {
           try {
             const data = JSON.parse(line)
-            const message: Message = {
-              id: generateMessageId(),
-              type: data.type === 'stdout' ? 'stdout' : data.type === 'stderr' ? 'stderr' : 'system',
-              content: data.data,
-              timestamp: new Date(),
+
+            // Filter out unwanted system messages
+            const shouldSkip =
+              data.type === 'start' ||
+              (data.type === 'close' && data.data.includes('code 0')) ||
+              data.data.includes('Process exited with code 0') ||
+              data.data.includes('Executing:')
+
+            if (!shouldSkip && data.data.trim()) {
+              const message: Message = {
+                id: generateMessageId(),
+                type: data.type === 'stdout' ? 'stdout' : data.type === 'stderr' ? 'stderr' : 'system',
+                content: data.data,
+                timestamp: new Date(),
+              }
+              setMessages((prev) => [...prev, message])
             }
-            setMessages((prev) => [...prev, message])
           } catch (e) {
             console.error('Failed to parse message:', e)
           }
@@ -246,6 +382,9 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
 
   const handleStartTask = async () => {
     try {
+      // Save the original base directory
+      setBaseDirectory(workingDirectory)
+
       // Create worktree
       const response = await fetch('/api/git', {
         method: 'POST',
@@ -262,41 +401,57 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         throw new Error(data.error || 'Failed to create worktree')
       }
 
-      // Store worktree info
+      // Store worktree info including the base path
       setWorktreeInfo({
         path: data.worktreePath,
         branch: data.worktreeBranch,
         baseBranch: data.baseBranch,
+        basePath: workingDirectory, // Keep original path
       })
 
-      // Update working directory to worktree path
-      setWorkingDirectory(data.worktreePath)
+      // DON'T update the displayed working directory - keep showing the original
+      // The worktree path will be used internally for commands
 
       // Add system message
       const systemMsg: Message = {
         id: generateMessageId(),
         type: 'system',
-        content: `🌿 Created worktree:\nPath: ${data.worktreePath}\nBranch: ${data.worktreeBranch}\nBase: ${data.baseBranch}`,
+        content: `🌿 Created worktree for task:\n\nWorktree: ${data.worktreePath}\nBranch: ${data.worktreeBranch}\nBase: ${data.baseBranch}\n\nWorking directory: ${workingDirectory}\n\n✨ All commands will run in the worktree. When done, merge back to ${data.baseBranch}.`,
         timestamp: new Date(),
       }
       setMessages([systemMsg])
 
       setTaskStarted(true)
 
-      // If AI CLI, send context
+      // If AI CLI, start persistent session
       if (isAICLI(selectedCLI)) {
+        const aiMsg: Message = {
+          id: generateMessageId(),
+          type: 'system',
+          content: '🤖 Starting AI session...',
+          timestamp: new Date(),
+        }
+        setMessages((prev) => [...prev, aiMsg])
+
+        // Start AI session first
+        await startAISession()
+
+        // Wait a bit for session to initialize
+        await new Promise(resolve => setTimeout(resolve, 1000))
+
+        // Send initial context
         const contextMessage = `Task: ${card.title}\n\nDescription: ${card.description}\n\nPriority: ${card.priority}\nStatus: ${card.columnId.replace('-', ' ')}\n\nWorking in: ${data.worktreePath}\n\nPlease help me with this task. What would you suggest?`
 
-        const aiMsg: Message = {
+        const contextMsg: Message = {
           id: generateMessageId(),
           type: 'system',
           content: '📋 Context sent to AI',
           timestamp: new Date(),
         }
-        setMessages((prev) => [...prev, aiMsg])
+        setMessages((prev) => [...prev, contextMsg])
         setContextSent(true)
 
-        // Execute with context
+        // Send context to session
         setTimeout(() => executeCommand(contextMessage, false), 500)
       }
     } catch (error: any) {
@@ -310,12 +465,30 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
     }
   }
 
-  const handleStopTask = () => {
+  const handleStopTask = async () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
       abortControllerRef.current = null
     }
     setIsExecuting(false)
+
+    // End AI session if active
+    if (aiSessionId && aiSessionActive) {
+      try {
+        await fetch('/api/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'end',
+            sessionId: aiSessionId,
+          }),
+        })
+      } catch (error) {
+        console.error('Failed to end AI session:', error)
+      }
+      setAiSessionId(null)
+      setAiSessionActive(false)
+    }
 
     const stopMsg: Message = {
       id: generateMessageId(),
@@ -340,7 +513,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'mergeWorktree',
-          basePath: workingDirectory.replace(worktreeInfo.path, '').split('/worktrees')[0],
+          basePath: worktreeInfo.basePath, // Use the stored original path
           worktreePath: worktreeInfo.path,
           worktreeBranch: worktreeInfo.branch,
         }),
@@ -381,7 +554,7 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'cleanupWorktree',
-          basePath: workingDirectory.replace(worktreeInfo.path, '').split('/worktrees')[0],
+          basePath: worktreeInfo.basePath, // Use the stored original path
           worktreePath: worktreeInfo.path,
           worktreeBranch: worktreeInfo.branch,
         }),
@@ -506,6 +679,11 @@ export function DetailPanel({ card, isOpen, onClose }: DetailPanelProps) {
               <div className="flex-1 flex items-center gap-2">
                 <div className="flex-1 px-3 py-2 bg-gray-50 dark:bg-slate-900 border border-gray-300 dark:border-slate-600 rounded-lg text-sm text-gray-900 dark:text-gray-100 font-mono truncate">
                   {workingDirectory || '/path/to/working/directory'}
+                  {worktreeInfo && (
+                    <span className="ml-2 text-xs text-blue-600 dark:text-blue-400">
+                      (working in worktree)
+                    </span>
+                  )}
                 </div>
                 <button
                   onClick={() => setShowDirectoryPicker(true)}

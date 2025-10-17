@@ -33,9 +33,11 @@ export function DirectoryPicker({
 
   useEffect(() => {
     if (isOpen) {
-      loadDirectory(currentPath)
+      // Use currentPath if provided, otherwise use current directory
+      const startPath = currentPath && currentPath !== '/tmp' ? currentPath : process.cwd?.() || currentPath
+      loadDirectory(startPath)
     }
-  }, [isOpen, currentPath])
+  }, [isOpen])
 
   const loadDirectory = async (dirPath: string) => {
     setLoading(true)
