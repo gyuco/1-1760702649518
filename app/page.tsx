@@ -7,7 +7,7 @@ export default function Home() {
         {/* Header */}
         <header className="mb-8">
           <h1 className="text-3xl sm:text-4xl font-bold text-gray-900 dark:text-gray-100 mb-2">
-            demo board 03bis
+            demo board 04
           </h1>
           <p className="text-gray-600 dark:text-gray-400 text-sm sm:text-base">
             My Kanban Flow
